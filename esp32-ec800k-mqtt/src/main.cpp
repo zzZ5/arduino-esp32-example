@@ -40,11 +40,6 @@ void loop() {
     }
   }
 
-  // 超时检测
-  if (!responseComplete && (millis() - lastReceiveTime > timeout)) {
-    Serial.println("AT 命令响应超时！");
-    lastReceiveTime = millis(); // 重置时间，避免重复提示
-  }
 
   // 主循环其他逻辑可在此添加
   delay(100); // 简单延时
