@@ -1,0 +1,22 @@
+{
+	"wifi": {
+	  "ssid": "LHJD",
+	  "password": "lhjd8888"
+	},
+	"mqtt": {
+	  "server": "118.25.108.254",
+	  "port": 1883,
+	  "user": "equipment",
+	  "pass": "ZNXK8888",
+	  "clientId": "linhu",
+	  "topic": "compostlab/test/post"
+	},
+	"ntp_servers": [
+	  "ntp.aliyun.com",
+	  "cn.ntp.org.cn",
+	  "ntp.tuna.tsinghua.edu.cn"
+	],
+	"pump_run_time": 60000,
+	"read_interval": 300000
+  }
+  
