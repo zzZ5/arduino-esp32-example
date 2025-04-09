@@ -12,7 +12,7 @@ bool publishData(const String& payload, unsigned long timeoutMs);
 
 // 其余函数
 bool connectToWiFi(unsigned long timeoutMs);
-void multiNTPSetup();
+bool multiNTPSetup(unsigned long timeoutMs);
 void maintainMQTT(unsigned long timeoutMs);
 String getTimeString();
 

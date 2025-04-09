@@ -11,10 +11,11 @@
  * @param rxPin:   传感器的RX
  * @param txPin:   传感器的TX
  */
-void initSensorAndPump(int pumpPin,
+bool initSensorAndPump(int pumpPin,
 	HardwareSerial& ser,
 	int rxPin,
-	int txPin);
+	int txPin,
+	unsigned long timeoutMs);
 
 /**
  * 打开/关闭氣泵

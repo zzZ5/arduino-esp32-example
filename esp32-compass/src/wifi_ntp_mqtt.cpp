@@ -39,33 +39,53 @@ static bool waitForSync(unsigned long ms) {
 	return false;
 }
 
-void multiNTPSetup() {
-	// 多服务器无限重试
+bool multiNTPSetup(unsigned long totalTimeoutMs) {
+	unsigned long start = millis();
 	bool synced = false;
+  
 	while (!synced) {
-		for (int i = 0;i < 3;i++) {
-			String server = appConfig.ntpServers[i];
-			if (server.length() < 1) continue;
-			Serial.print("[NTP] configTime: "); Serial.println(server);
-			configTime(0, 0, server.c_str());
-			if (waitForSync(5000)) {
-				Serial.println("[NTP] success!");
-				synced = true;
-				break;
-			}
-			else {
-				Serial.println("[NTP] fail, next...");
-			}
+	  // 依次尝试 3 台服务器
+	  for (int i = 0; i < 3; i++) {
+		// 若总耗时超时 => return false
+		if (millis() - start > totalTimeoutMs) {
+		  Serial.println("[NTP] overall timeout in multiNTPSetup!");
+		  return false;
 		}
-		if (!synced) {
-			Serial.println("[NTP] all fail, wait 2s & retry...");
-			delay(2000);
+  
+		String server = appConfig.ntpServers[i];
+		if (server.length() < 1) continue; // 若为空,跳过
+		Serial.print("[NTP] configTime: ");
+		Serial.println(server);
+  
+		// 先设置0时区
+		configTime(0, 0, server.c_str());
+		// 等待 5秒看能否同步
+		if (waitForSync(5000)) {
+		  Serial.println("[NTP] success!");
+		  synced = true;
+		  break;
+		} else {
+		  Serial.println("[NTP] fail, next...");
 		}
+	  }
+  
+	  if (!synced) {
+		// 全部3台都失败 => 等2s再重试
+		// 但要再次检查总超时
+		if (millis() - start > totalTimeoutMs) {
+		  Serial.println("[NTP] overall timeout in multiNTPSetup(2)!");
+		  return false;
+		}
+		Serial.println("[NTP] all fail, wait 2s & retry...");
+		delay(2000);
+	  }
 	}
-	// 设置时区(UTC+8)
+  
+	// 若成功 => 设置本地时区(UTC+8)
 	configTime(8 * 3600, 0, appConfig.ntpServers[0].c_str());
 	Serial.println("[NTP] done!");
-}
+	return true;
+  }
 
 // 获取本地时间字符串
 // (前提：已通过多NTPSetup设置了本地时间)

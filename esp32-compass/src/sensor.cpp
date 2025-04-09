@@ -5,28 +5,42 @@ static int g_pumpPin;
 static HardwareSerial* g_sensorSer = nullptr;
 
 //------------------------------
-// 初始化: 氣泵 + 传感器
+// 初始化: 气泵 + 传感器
 //------------------------------
-void initSensorAndPump(int pumpPin,
+bool initSensorAndPump(int pumpPin,
 	HardwareSerial& ser,
 	int rxPin,
-	int txPin)
+	int txPin,
+	unsigned long timeoutMs)
 {
-	// 1) 记录泵引脚
+	// 记录开始时间
+	unsigned long start = millis();
+
+	// 1) 设置泵引脚为默认关闭状态
 	g_pumpPin = pumpPin;
 	pinMode(g_pumpPin, OUTPUT);
-	digitalWrite(g_pumpPin, HIGH); // 默认关闭气泵
+	digitalWrite(g_pumpPin, HIGH); // 默认关闭
 
 	// 2) 初始化串口
 	g_sensorSer = &ser;
 	g_sensorSer->begin(9600, SERIAL_8N1, rxPin, txPin);
 
-	// 3) 切换传感器到问答模式
-	uint8_t cmd[] = { 0xFF,0x01,0x78,0x41,0x00,0x00,0x00,0x00,0x46 };
+	// 3) 发送切换到问答模式命令
+	uint8_t cmd[] = { 0xFF, 0x01, 0x78, 0x41, 0x00, 0x00, 0x00, 0x00, 0x46 };
 	g_sensorSer->write(cmd, sizeof(cmd));
+
+	// 4) 等待1秒(阻塞)，然后在末尾检查耗时
 	delay(1000);
 
+	// 在此检查整个流程是否超过了 timeoutMs
+	if (millis() - start > timeoutMs) {
+		Serial.println("[Sensor] initSensorAndPump timed out!");
+		return false;
+	}
+
+	// 若未超时，即视为成功
 	Serial.println("[Sensor] init sensor & pump done.");
+	return true;
 }
 
 //------------------------------
