@@ -144,7 +144,7 @@ void maintainMQTT(unsigned long timeoutMs) {
  * 短循环 + 超时检查 版本
  * 在 timeoutMs 时间内若无法成功 publish，就返回 false
  */
-bool publishData(const String &payload, unsigned long timeoutMs) {
+bool publishData(const String &topic, const String &payload, unsigned long timeoutMs) {
 	unsigned long start = millis();
   
 	// 1) 若未连接则尝试在 timeoutMs 内连上
@@ -161,10 +161,10 @@ bool publishData(const String &payload, unsigned long timeoutMs) {
 		}
 	  }
 	}
-  
+	
 	// 2) 执行 publish
 	while(true) {
-	  if (mqttClient.publish(appConfig.mqttTopic.c_str(), payload.c_str())) {
+	  if (mqttClient.publish(topic.c_str(), payload.c_str())) {
 		Serial.println("[MQTT] Publish success: " + payload);
 		return true;
 	  } else {

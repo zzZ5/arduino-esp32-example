@@ -3,25 +3,40 @@
 
 #include <Arduino.h>
 
-// 定义一个结构体存储配置信息
+// AppConfig 结构定义（包含 wifi / mqtt / equipment_key / keys等）
 struct AppConfig {
+	// wifi
 	String wifiSSID;
 	String wifiPass;
+
+	// mqtt
 	String mqttServer;
 	int    mqttPort;
 	String mqttUser;
 	String mqttPass;
 	String mqttClientId;
 	String mqttTopic;
+
+	// ntp
+	String ntpServers[3];
+
+	// 采集周期 & 泵时长
 	unsigned long pumpRunTime;
 	unsigned long readInterval;
-	String ntpServers[3];
+
+	// equipment_key
+	String equipmentKey;
+
+	// "CO", "O2", "CH4", "H2S"
+	String keyCO;
+	String keyO2;
+	String keyCH4;
+	String keyH2S;
 };
 
-// 声明全局的 AppConfig 对象 (或在cpp里做static,由 getter返回)
+// 全局对象
 extern AppConfig appConfig;
 
-// 声明函数
 bool initSPIFFS();
 bool loadConfigFromSPIFFS(const char* path);
 bool saveConfigToSPIFFS(const char* path);

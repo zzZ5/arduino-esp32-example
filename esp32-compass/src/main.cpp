@@ -118,40 +118,43 @@ void loop() {
         + ",CH4=" + String(ch4Val);
       logWrite(LogLevel::INFO, sensorLog);
 
-      // 3) 拼装 JSON
+      // (3) 拼装 JSON
       String measuredTime = getTimeString(); // 取当前时间
       String payload = "{";
       payload += "\"data\":[";
       // CO
       payload += "{";
       payload += "\"value\":" + String(coVal);
-      payload += ",\"key\":\"CO\"";
+      payload += ",\"key\":\"" + appConfig.keyCO + "\"";        // 从 config 中读取 CO 的键
       payload += ",\"measured_time\":\"" + measuredTime + "\"";
       payload += "},";
+
       // H2S
       payload += "{";
       payload += "\"value\":" + String(h2sVal);
-      payload += ",\"key\":\"H2S\"";
+      payload += ",\"key\":\"" + appConfig.keyH2S + "\"";       // 从 config 中读取 H2S 的键
       payload += ",\"measured_time\":\"" + measuredTime + "\"";
       payload += "},";
+
       // O2
       payload += "{";
       payload += "\"value\":" + String(o2Val, 1);
-      payload += ",\"key\":\"O2\"";
+      payload += ",\"key\":\"" + appConfig.keyO2 + "\"";        // 从 config 中读取 O2 的键
       payload += ",\"measured_time\":\"" + measuredTime + "\"";
       payload += "},";
+
       // CH4
       payload += "{";
-
       payload += "\"value\":" + String(ch4Val);
-      payload += ",\"key\":\"CH4\"";
+      payload += ",\"key\":\"" + appConfig.keyCH4 + "\"";       // 从 config 中读取 CH4 的键
       payload += ",\"measured_time\":\"" + measuredTime + "\"";
       payload += "}";
+
       payload += "]}";
 
       // 4) 发布(示例: 10秒超时)
       logWrite(LogLevel::INFO, "Publishing data to MQTT...");
-      if (!publishData(payload, MQTT_TIMEOUT)) {
+      if (!publishData(appConfig.mqttTopic, payload, MQTT_TIMEOUT)) {
         logWrite(LogLevel::ERROR, "Publish fail => Reboot");
         ESP.restart();
       }
