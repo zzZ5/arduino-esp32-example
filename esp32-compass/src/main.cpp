@@ -28,8 +28,8 @@ void setup() {
   else {
     // 设置最小日志等级(示例：只写INFO以上)
     setMinLogLevel(LogLevel::INFO);
-    // 设置日志文件最大20KB
-    setMaxLogSize(20 * 1024);
+    // 设置日志文件最大50KB
+    setMaxLogSize(50 * 1024);
     // 记录启动
     logWrite(LogLevel::INFO, "Device booting, log system ready.");
   }
