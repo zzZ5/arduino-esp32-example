@@ -7,7 +7,7 @@ static const char* LOG_FILENAME = "/log.txt";
 
 // 默认的配置
 static LogLevel s_minLogLevel = LogLevel::DEBUG; // 默认写所有等级
-static size_t   s_maxLogSize = 20 * 1024;       // 20KB
+static size_t   s_maxLogSize = 50 * 1024;       // 50KB
 
 //------------------------------------------------
 // 取日志等级对应字符串
