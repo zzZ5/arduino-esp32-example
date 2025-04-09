@@ -8,12 +8,12 @@
 // 常量定义
 //=
 
-// Wi-Fi 超时(示例15秒)
-static const unsigned long WIFI_TIMEOUT = 15000UL;
+// Wi-Fi 超时(示例20秒)
+static const unsigned long WIFI_TIMEOUT = 20000UL;
 // NTP 超时(示例: 20秒)
 static const unsigned long NTP_TIMEOUT = 20000UL;
-// MQTT 超时(示例10秒)
-static const unsigned long MQTT_TIMEOUT = 10000UL;
+// MQTT 超时(示例20秒)
+static const unsigned long MQTT_TIMEOUT = 20000UL;
 // 初始化超时(示例5秒)
 static const unsigned long INIT_TIMEOUT = 5000UL;
 
@@ -52,7 +52,7 @@ void setup() {
   printConfig(appConfig);
 
 
-  // 3) Wi-Fi 连接(15秒)
+  // 3) Wi-Fi 连接
   logWrite(LogLevel::INFO, "Connecting WiFi...");
   unsigned long startTime = millis();
   if (!connectToWiFi(WIFI_TIMEOUT)) {
@@ -60,7 +60,7 @@ void setup() {
     ESP.restart();
   }
   logWrite(LogLevel::INFO, "WiFi connected.");
-  // 4) NTP (20秒)
+  // 4) NTP
   logWrite(LogLevel::INFO, "multiNTPSetup with 20s totalTimeout");
   startTime = millis();
   if (!multiNTPSetup(NTP_TIMEOUT)) {
@@ -69,7 +69,7 @@ void setup() {
   }
   logWrite(LogLevel::INFO, "NTP done.");
 
-  // 5) MQTT连接(10秒)
+  // 5) MQTT连接
   logWrite(LogLevel::INFO, "Connect MQTT...");
   startTime = millis();
   if (!connectToMQTT(MQTT_TIMEOUT)) {
@@ -78,7 +78,7 @@ void setup() {
   }
   logWrite(LogLevel::INFO, "MQTT connected OK");
 
-  // 6) 初始化传感器 & 气泵(5秒)
+  // 6) 初始化传感器 & 气泵
   logWrite(LogLevel::INFO, "Init sensor & pump with 5s timeout...");
   startTime = millis();
   if (!initSensorAndPump(4, Serial1, 16, 17, INIT_TIMEOUT)) {
