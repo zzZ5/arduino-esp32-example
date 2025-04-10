@@ -17,13 +17,12 @@ bool connectToWiFi(unsigned long timeoutMs) {
 	unsigned long start = millis();
 	while (WiFi.status() != WL_CONNECTED) {
 		delay(500);
-		Serial.print(".");
 		if (millis() - start > timeoutMs) {
 			Serial.println("\n[WiFi] Timeout!");
 			return false; // 表示失败
 		}
 	}
-	Serial.printf("\n[WiFi] Connected, IP: %s\n", WiFi.localIP().toString().c_str());
+	Serial.printf("[WiFi] Connected, IP: %s\n", WiFi.localIP().toString().c_str());
 	return true;
 }
 
