@@ -29,6 +29,20 @@ static const unsigned long INIT_TIMEOUT = 5000UL;
 // 函数声明
 bool doMeasurementAndSave();
 
+// 进入轻度睡眠模式（节省电量）
+void goToLightSleep() {
+  Serial.println("Going to light sleep for 1 minute...");
+  esp_sleep_enable_timer_wakeup(1 * 60 * 1000000);  // 设置1分钟后唤醒esp_sleep_enable_timer_wakeup11
+  esp_light_sleep_start();  // ESP32将进入轻度睡眠状态，Wi-Fi模块仍然会保持活动
+}
+
+// 进入深度睡眠模式（节省电量，非必需，可根据需要调整）
+void goToDeepSleep() {
+  Serial.println("Going to deep sleep for 10 minutes...");
+  esp_sleep_enable_timer_wakeup(10 * 60 * 500000);  // 设置为5分钟
+  esp_deep_sleep_start();
+}
+
 void setup() {
   Serial.begin(115200);
   Serial.println("[Setup] Program start...");
@@ -148,6 +162,9 @@ void setup() {
 
   Serial.println("[Setup] All done, enter loop");
   logWrite(LogLevel::INFO, "Setup done, entering loop");
+
+  // 进入轻度睡眠等待下一次测量
+  goToLightSleep();  // 在每次采集后节省电量
 }
 
 void loop() {
@@ -162,6 +179,7 @@ void loop() {
   }
 
   delay(50);
+  goToLightSleep();  // 在每次周期后进入轻度睡眠以节省电量
 }
 
 
