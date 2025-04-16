@@ -108,6 +108,18 @@ bool connectToMQTT(unsigned long timeoutMs) {
 
 	unsigned long start = millis();
 	while (!mqttClient.connected()) {
+		// 检测wifi是否连接
+		if (WiFi.status() != WL_CONNECTED) {
+			Serial.println("[MQTT] WiFi not connected, trying to reconnect WiFi...");
+			if (!connectToWiFi(timeoutMs)) { 
+			  Serial.println("[MQTT] Reconnect WiFi failed!");
+			  return false;
+			}
+			else {
+			  Serial.println("[MQTT] WiFi reconnected.");
+			}
+		}
+		
 		// 检测是否超时
 		if (millis() - start > timeoutMs) {
 			Serial.printf("[MQTT] connectToMQTT() timed out (> %lu ms)!\n", timeoutMs);
