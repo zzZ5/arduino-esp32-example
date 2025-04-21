@@ -31,5 +31,6 @@ bool readFourInOneSensor(uint16_t& coVal,
 	uint16_t& h2sVal,
 	float& o2Val,
 	uint16_t& ch4Val);
+bool readSHT30(float& temperature, float& humidity);
 
 #endif

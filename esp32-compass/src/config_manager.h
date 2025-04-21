@@ -32,6 +32,8 @@ struct AppConfig {
 	String keyO2;
 	String keyCH4;
 	String keyH2S;
+	String keyTemp;
+	String keyHumi;
 };
 
 // 全局对象

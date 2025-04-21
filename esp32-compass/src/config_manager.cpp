@@ -74,6 +74,8 @@ bool loadConfigFromSPIFFS(const char* path) {
 		appConfig.keyO2 = keysObj["O2"] | "";
 		appConfig.keyCH4 = keysObj["CH4"] | "";
 		appConfig.keyH2S = keysObj["H2S"] | "";
+		appConfig.keyTemp = keysObj["Temp"] | "";
+		appConfig.keyHumi = keysObj["Humi"] | "";
 	}
 
 	return true;
@@ -107,6 +109,8 @@ void printConfig(const AppConfig& cfg) {
 	Serial.print("  O2=");  Serial.println(cfg.keyO2);
 	Serial.print("  CH4="); Serial.println(cfg.keyCH4);
 	Serial.print("  H2S="); Serial.println(cfg.keyH2S);
+	Serial.print("  Temp="); Serial.println(cfg.keyTemp);
+	Serial.print("  Humi="); Serial.println(cfg.keyHumi);
 
 	Serial.println("---------------------");
 }
@@ -146,6 +150,8 @@ bool saveConfigToSPIFFS(const char* path) {
 	keysObj["O2"] = appConfig.keyO2;
 	keysObj["CH4"] = appConfig.keyCH4;
 	keysObj["H2S"] = appConfig.keyH2S;
+	keysObj["Temp"] = appConfig.keyTemp;
+	keysObj["Humi"] = appConfig.keyHumi;
 
 	// 打开文件(覆盖写)
 	File file = SPIFFS.open(path, FILE_WRITE);

@@ -9,7 +9,7 @@
 	  "user": "equipment",
 	  "pass": "ZNXK8888",
 	  "clientId": "linhu",
-	  "topic": "compostlab/test"
+	  "topic": "compostlab/0wPPzbFqWd/post/data"
 	},
 	"ntp_servers": [
 	  "ntp.aliyun.com",
@@ -23,7 +23,9 @@
 		"CO": "9pMvRTDkOLsoyZ5",
 		"O2": "j2gDW7xyY60KIcD",
 		"CH4": "CXAu9q24LIoIAWK",
-		"H2S": "5gJlWrxUdchT8Fo"
+		"H2S": "5gJlWrxUdchT8Fo" ,
+		"Temp": "njazRQ0eZGEpo5W",
+		"Humi": "LeTMAju9Ta0UJVQ"
 	}
   }
   

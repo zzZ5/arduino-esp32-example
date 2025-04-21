@@ -1,8 +1,11 @@
 #include "sensor.h"
+#include <Wire.h>
+#include <Adafruit_SHT31.h>
 
 // 静态/全局变量，保存泵引脚、串口指针
 static int g_pumpPin;
 static HardwareSerial* g_sensorSer = nullptr;
+static Adafruit_SHT31 sht30 = Adafruit_SHT31();
 
 //------------------------------
 // 初始化: 气泵 + 传感器
@@ -25,11 +28,22 @@ bool initSensorAndPump(int pumpPin,
 	g_sensorSer = &ser;
 	g_sensorSer->begin(9600, SERIAL_8N1, rxPin, txPin);
 
-	// 3) 发送切换到问答模式命令
+
+	// 3) 初始化 SHT30（I2C）
+	Wire.begin(); // 默认 SDA=21, SCL=22
+	if (!sht30.begin(0x44)) {
+		Serial.println("[Sensor] Failed to init SHT30!");
+		return false;
+	}
+	else {
+		Serial.println("[Sensor] SHT30 init OK.");
+	}
+
+	// 4) 启动四合一气体传感器，发送切换到问答模式命令
 	uint8_t cmd[] = { 0xFF, 0x01, 0x78, 0x41, 0x00, 0x00, 0x00, 0x00, 0x46 };
 	g_sensorSer->write(cmd, sizeof(cmd));
 
-	// 4) 等待1秒(阻塞)，然后在末尾检查耗时
+	// 5) 等待1秒(阻塞)，然后在末尾检查耗时
 	delay(1000);
 
 	// 在此检查整个流程是否超过了 timeoutMs
@@ -56,6 +70,21 @@ void pumpOff() {
 	Serial.println("Pump OFF");
 }
 
+//------------------------------
+// 读取 SHT30 温湿度
+//------------------------------
+bool readSHT30(float& temperature, float& humidity) {
+	temperature = sht30.readTemperature();
+	humidity = sht30.readHumidity();
+
+	if (!isnan(temperature) && !isnan(humidity)) {
+		return true;
+	}
+	else {
+		Serial.println("[Sensor] SHT30 read fail!");
+		return false;
+	}
+}
 //------------------------------
 // 读取四合一气体传感器
 //------------------------------

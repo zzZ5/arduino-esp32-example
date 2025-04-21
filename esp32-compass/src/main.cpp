@@ -203,6 +203,12 @@ bool doMeasurementAndSave() {
     return false;
   }
 
+  float tempC, humidity;
+  if (!readSHT30(tempC, humidity)) {
+    logWrite(LogLevel::WARN, "SHT30 read fail => skip publish");
+    return false;
+  }
+
   // 3) 拼装 JSON
   String measuredTime = getTimeString();
   time_t nowEpoch = time(nullptr);
@@ -238,6 +244,19 @@ bool doMeasurementAndSave() {
   payload += ",\"measured_time\":\"" + measuredTime + "\"";
   payload += "}";
 
+  // 温度
+  payload += "{";
+  payload += "\"value\":" + String(tempC, 1);
+  payload += ",\"key\":\"" + appConfig.keyTemp + "\"";  // 需要在 config.json 中添加 keyTemp
+  payload += ",\"measured_time\":\"" + measuredTime + "\"";
+  payload += "},";
+
+  // 湿度
+  payload += "{";
+  payload += "\"value\":" + String(humidity, 1);
+  payload += ",\"key\":\"" + appConfig.keyHumi + "\"";  // 需要在 config.json 中添加 keyHumi
+  payload += ",\"measured_time\":\"" + measuredTime + "\"";
+  payload += "}";
   payload += "]}";
 
   // 4) 发布
