@@ -190,7 +190,7 @@ void loop() {
 bool doMeasurementAndSave() {
   // 1) 打开气泵, 延时 appConfig.pumpRunTime (阻塞式)
   pumpOn();
-  logWrite(LogLevel::INFO, "Pump ON, wait 60s...");
+  logWrite(LogLevel::INFO, "Pump ON, wait 120s...");
   delay(appConfig.pumpRunTime);
   pumpOff();
   logWrite(LogLevel::INFO, "Pump OFF, reading sensor...");
