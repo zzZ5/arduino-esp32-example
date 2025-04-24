@@ -1,12 +1,13 @@
 #include "sensor.h"
 #include <Wire.h>
+#include <DHT.h>
 #include <Adafruit_SHT31.h>
 
 // 静态/全局变量，保存泵引脚、串口指针
 static int g_pumpPin;
 static HardwareSerial* g_sensorSer = nullptr;
 static Adafruit_SHT31 sht30 = Adafruit_SHT31();
-
+static DHT dht22(14, DHT22);
 //------------------------------
 // 初始化: 气泵 + 传感器
 //------------------------------
@@ -30,14 +31,17 @@ bool initSensorAndPump(int pumpPin,
 
 
 	// 3) 初始化 SHT30（I2C）
-	Wire.begin(); // 默认 SDA=21, SCL=22
-	if (!sht30.begin(0x44)) {
-		Serial.println("[Sensor] Failed to init SHT30!");
-		return false;
-	}
-	else {
-		Serial.println("[Sensor] SHT30 init OK.");
-	}
+	// Wire.begin(); // 默认 SDA=21, SCL=22
+	// if (!sht30.begin(0x44)) {
+	// 	Serial.println("[Sensor] Failed to init SHT30!");
+	// 	return false;
+	// }
+	// else {
+	// 	Serial.println("[Sensor] SHT30 init OK.");
+	// }
+
+	// 3)初始化 DHT22
+	dht22.begin();
 
 	// 4) 启动四合一气体传感器，发送切换到问答模式命令
 	uint8_t cmd[] = { 0xFF, 0x01, 0x78, 0x41, 0x00, 0x00, 0x00, 0x00, 0x46 };
@@ -85,6 +89,16 @@ bool readSHT30(float& temperature, float& humidity) {
 		return false;
 	}
 }
+
+//------------------------------
+// 读取 DHT22 温湿度
+//------------------------------
+bool readDHT22(float& tempC, float& humidity) {
+	tempC = dht22.readTemperature();
+	humidity = dht22.readHumidity();
+	return !isnan(tempC) && !isnan(humidity);
+}
+
 //------------------------------
 // 读取四合一气体传感器
 //------------------------------

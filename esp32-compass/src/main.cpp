@@ -204,7 +204,7 @@ bool doMeasurementAndSave() {
   }
 
   float tempC, humidity;
-  if (!readSHT30(tempC, humidity)) {
+  if (!readDHT22(tempC, humidity)) {
     logWrite(LogLevel::WARN, "SHT30 read fail => skip publish");
     return false;
   }
@@ -242,7 +242,7 @@ bool doMeasurementAndSave() {
   payload += "\"value\":" + String(ch4Val);
   payload += ",\"key\":\"" + appConfig.keyCH4 + "\"";       // 从 config 中读取 CH4 的键
   payload += ",\"measured_time\":\"" + measuredTime + "\"";
-  payload += "}";
+  payload += "},";
 
   // 温度
   payload += "{";
