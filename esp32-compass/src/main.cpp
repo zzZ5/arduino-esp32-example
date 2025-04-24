@@ -204,7 +204,7 @@ bool doMeasurementAndSave() {
   }
 
   float tempC, humidity;
-  if (!readDHT22(tempC, humidity)) {
+  if (!readSHT30(tempC, humidity)) {
     logWrite(LogLevel::WARN, "SHT30 read fail => skip publish");
     return false;
   }

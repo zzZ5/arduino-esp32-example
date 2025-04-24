@@ -31,17 +31,17 @@ bool initSensorAndPump(int pumpPin,
 
 
 	// 3) 初始化 SHT30（I2C）
-	// Wire.begin(); // 默认 SDA=21, SCL=22
-	// if (!sht30.begin(0x44)) {
-	// 	Serial.println("[Sensor] Failed to init SHT30!");
-	// 	return false;
-	// }
-	// else {
-	// 	Serial.println("[Sensor] SHT30 init OK.");
-	// }
+	Wire.begin(); // 默认 SDA=21, SCL=22
+	if (!sht30.begin(0x44)) {
+		Serial.println("[Sensor] Failed to init SHT30!");
+		return false;
+	}
+	else {
+		Serial.println("[Sensor] SHT30 init OK.");
+	}
 
 	// 3)初始化 DHT22
-	dht22.begin();
+	// dht22.begin();
 
 	// 4) 启动四合一气体传感器，发送切换到问答模式命令
 	uint8_t cmd[] = { 0xFF, 0x01, 0x78, 0x41, 0x00, 0x00, 0x00, 0x00, 0x46 };
