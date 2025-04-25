@@ -7,7 +7,7 @@ static const char* LOG_FILENAME = "/log.txt";
 
 // 默认的配置
 static LogLevel s_minLogLevel = LogLevel::DEBUG; // 默认写所有等级
-static size_t   s_maxLogSize = 50 * 1024;       // 50KB
+static size_t   s_maxLogSize = 50 * 1024;        // 50KB
 
 //------------------------------------------------
 // 取日志等级对应字符串
@@ -18,8 +18,8 @@ static const char* levelName(LogLevel lvl) {
 	case LogLevel::INFO:  return "INFO";
 	case LogLevel::WARN:  return "WARN";
 	case LogLevel::ERROR: return "ERROR";
+	default: return "UNKNOWN";
 	}
-	return "UNKNOWN";
 }
 
 //------------------------------------------------
@@ -38,8 +38,7 @@ static String getTimeString() {
 
 //------------------------------------------------
 // 检查并限制日志文件大小
-// 简单做法: 超过时直接删除
-// (也可改成轮转 rename -> /log.old, 再新建 /log.txt)
+// 如果超限，删除并重建空的日志文件
 //------------------------------------------------
 static void checkLogSizeLimit() {
 	File f = SPIFFS.open(LOG_FILENAME, FILE_READ);
@@ -51,9 +50,21 @@ static void checkLogSizeLimit() {
 	f.close();
 
 	if (sz > s_maxLogSize) {
-		// 简单做法: 删除文件
-		SPIFFS.remove(LOG_FILENAME);
-		// 若想轮转，改为 rename("/log.txt","/log.old") 之类
+		if (SPIFFS.remove(LOG_FILENAME)) {
+			Serial.println("[Log] /log.txt removed due to size limit.");
+		}
+		else {
+			Serial.println("[Log] Failed to remove /log.txt!");
+		}
+
+		File newFile = SPIFFS.open(LOG_FILENAME, FILE_WRITE);
+		if (newFile) {
+			Serial.println("[Log] New empty /log.txt created.");
+			newFile.close();
+		}
+		else {
+			Serial.println("[Log] Failed to create new /log.txt!");
+		}
 	}
 }
 
@@ -66,6 +77,18 @@ bool initLogSystem() {
 		return false;
 	}
 	Serial.println("[Log] SPIFFS mounted OK");
+
+	// 确保日志文件存在
+	if (!SPIFFS.exists(LOG_FILENAME)) {
+		File f = SPIFFS.open(LOG_FILENAME, FILE_WRITE);
+		if (f) {
+			Serial.println("[Log] Created initial /log.txt");
+			f.close();
+		}
+		else {
+			Serial.println("[Log] Failed to create /log.txt on init!");
+		}
+	}
 	return true;
 }
 
@@ -89,28 +112,31 @@ void setMaxLogSize(size_t bytes) {
 bool logWrite(LogLevel level, const String& message) {
 	// 1) 判断日志等级
 	if (static_cast<int>(level) < static_cast<int>(s_minLogLevel)) {
-		// 等级太低，不写
-		return true;
+		return true; // 不写入
 	}
 
 	// 2) 检查文件大小限制
 	checkLogSizeLimit();
 
-	// 3) 打开文件 追加
+	// 3) 确保文件存在
+	if (!SPIFFS.exists(LOG_FILENAME)) {
+		File f = SPIFFS.open(LOG_FILENAME, FILE_WRITE);
+		if (f) f.close();
+	}
+
+	// 4) 打开文件追加写入
 	File file = SPIFFS.open(LOG_FILENAME, FILE_APPEND);
 	if (!file) {
 		Serial.println("[Log] open /log.txt for append fail!");
 		return false;
 	}
 
-	// 4) 拼装日志内容
-	// [YYYY-MM-DD HH:MM:SS] [LEVEL] message
+	// 5) 拼装日志内容
 	String timeStr = getTimeString();
 	String lvlName = levelName(level);
-
 	String line = "[" + timeStr + "] [" + lvlName + "] " + message;
 
-	// 5) 写入
+	// 6) 写入文件
 	size_t written = file.println(line);
 	file.close();
 
@@ -122,7 +148,7 @@ bool logWrite(LogLevel level, const String& message) {
 }
 
 //------------------------------------------------
-// 读取全部日志
+// 读取全部日志内容
 //------------------------------------------------
 String readAllLogs() {
 	File file = SPIFFS.open(LOG_FILENAME, FILE_READ);
