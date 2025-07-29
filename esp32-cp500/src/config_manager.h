@@ -1,0 +1,42 @@
+#ifndef CONFIG_MANAGER_H
+#define CONFIG_MANAGER_H
+
+#include <Arduino.h>
+#include <vector>
+
+struct AppConfig {
+	String wifiSSID;
+	String wifiPass;
+
+	String mqttServer;
+	uint16_t mqttPort;
+	String mqttUser;
+	String mqttPass;
+	String mqttClientId;
+	String mqttPostTopic;
+	String mqttResponseTopic;
+
+	std::vector<String> ntpServers;
+
+	uint32_t postInterval;
+	uint32_t tempMaxDiff;
+
+	// 温度上下限（单位：°C）
+	uint32_t tempLimitOutMax;
+	uint32_t tempLimitInMax;
+	uint32_t tempLimitOutMin;
+	uint32_t tempLimitInMin;
+
+	String equipmentKey;
+	String keyTempIn;
+	std::vector<String> keyTempOut;
+};
+
+extern AppConfig appConfig;
+
+bool initSPIFFS();
+bool loadConfigFromSPIFFS(const char* path);
+bool saveConfigToSPIFFS(const char* path);
+void printConfig(const AppConfig& cfg);
+
+#endif
