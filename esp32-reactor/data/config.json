@@ -1,0 +1,45 @@
+{
+  "wifi": {
+    "ssid": "Compostlab",
+    "password": "znxk8888"
+  },
+  "mqtt": {
+    "server": "118.25.108.254",
+    "port": 1883,
+    "user": "equipment",
+    "pass": "ZNXK8888",
+    "clientId": "reactor008",
+    "post_topic": "compostlab/PnnNL4mzpC/post/data",
+    "response_topic": "compostlab/PnnNL4mzpC/response"
+  },
+  "keys": {
+    "ds": [
+      "tjishLpN3IrJsl1",
+      "HFZaVgEzjdwLpbx",
+      "LjP2z18WlRrLmlH",
+      "BNHSa1zHJSnksfY",
+      "85im7uifUwtum8A",
+      "Iy6K1YxJyopWkEY"
+    ],
+    "rank": [
+      1,
+      4,
+      2,
+      5,
+      3,
+      6
+    ]
+  },
+  "post_interval": 60000,
+  "ntp_host": [
+    "ntp.ntsc.ac.cn",
+    "ntp.aliyun.com",
+    "cn.ntp.org.cn",
+    "ntp.tuna.tsinghua.edu.cn",
+    "ntp.sjtu.edu.cn",
+    "202.120.2.101"
+  ],
+  "temp_maxdif": 5,
+  "equipment_key": "PnnNL4mzpC",
+  "sgp30": "pCqMGqzDZvkFvLU"
+}

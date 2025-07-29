@@ -109,7 +109,7 @@ bool doMeasurementAndSave() {
   exhaustPumpOff();
 
   // 进行多次 CO2 测量并去除异常值后取平均值
-  const int sampleCount = 5;
+  const int sampleCount = 3;
   std::vector<int> co2Samples;
   for (int i = 0; i < sampleCount; ++i) {
     int val = readMHZ16();

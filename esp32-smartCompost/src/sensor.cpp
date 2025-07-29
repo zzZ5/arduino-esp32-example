@@ -96,32 +96,61 @@ void aerationOff() {
 }
 
 // ========== MH-Z16 二氧化碳浓度读取 ==========
+bool readWithTimeout(HardwareSerial* ser, byte* buf, int len, unsigned long timeoutMs) {
+	int received = 0;
+	unsigned long start = millis();
+
+	while (received < len && millis() - start < timeoutMs) {
+		if (ser->available()) {
+			buf[received++] = ser->read();
+		}
+		else {
+			delay(1);  // 稍作等待
+		}
+	}
+	return (received == len);
+}
 
 int readMHZ16() {
 	if (!mhzSerial) return -1;
 
+	// 清缓存
+	while (mhzSerial->available()) mhzSerial->read();
+
+	// 发送命令
 	byte cmd[9] = { 0xFF, 0x01, 0x86, 0, 0, 0, 0, 0, 0x79 };
-	byte response[9];
-
 	mhzSerial->write(cmd, 9);
-	delay(10);
 
-	if (mhzSerial->available() >= 9) {
-		mhzSerial->readBytes(response, 9);
-		if (response[0] == 0xFF && response[1] == 0x86) {
-			uint8_t checksum = 0;
-			for (int i = 1; i < 8; i++) checksum += response[i];
-			checksum = 0xFF - checksum + 1;
-			if (checksum == response[8]) {
-				int ppm = response[2] * 256 + response[3];
-				Serial.printf("[CO₂] %d ppm\n", ppm);
-				return ppm;
-			}
-		}
+	// 读取9字节响应，带超时机制
+	byte response[9];
+	if (!readWithTimeout(mhzSerial, response, 9, 2000)) {
+		Serial.printf("[CO₂] Timeout or incomplete data\n");
+		return -1;
 	}
-	Serial.println("[CO₂] Read failed");
-	return -1;
+
+	// 打印响应数据
+	Serial.print("[CO₂ Raw] ");
+	for (int i = 0; i < 9; i++) {
+		Serial.printf("%02X ", response[i]);
+	}
+	Serial.println();
+
+	// 校验和
+	uint8_t checksum = 0;
+	for (int i = 1; i < 8; i++) checksum += response[i];
+	checksum = 0xFF - checksum + 1;
+
+	if (response[0] == 0xFF && response[1] == 0x86 && response[8] == checksum) {
+		int ppm = response[2] * 256 + response[3];
+		Serial.printf("[CO₂] %d ppm\n", ppm);
+		return ppm;
+	}
+	else {
+		Serial.printf("[CO₂] Checksum mismatch: expected %02X, got %02X\n", checksum, response[8]);
+		return -1;
+	}
 }
+
 
 // ========== 氧气传感器读取 ==========
 
