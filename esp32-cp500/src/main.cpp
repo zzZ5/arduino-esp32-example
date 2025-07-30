@@ -67,6 +67,68 @@ void executeCommand(const PendingCommand& pcmd) {
   }
 }
 
+// ========================= config更新函数 =========================
+// 解析远程发送的 JSON 配置文件并进行更新，成功返回 true
+bool updateAppConfigFromJson(JsonObject obj) {
+  // 1. wifi 参数
+  if (obj.containsKey("wifi")) {
+    JsonObject wifi = obj["wifi"];
+    if (wifi.containsKey("ssid"))     appConfig.wifiSSID = wifi["ssid"].as<String>();
+    if (wifi.containsKey("password")) appConfig.wifiPass = wifi["password"].as<String>();
+  }
+
+  // 2. mqtt 参数
+  if (obj.containsKey("mqtt")) {
+    JsonObject mqtt = obj["mqtt"];
+    if (mqtt.containsKey("server"))       appConfig.mqttServer = mqtt["server"].as<String>();
+    if (mqtt.containsKey("port"))         appConfig.mqttPort = mqtt["port"].as<int>();
+    if (mqtt.containsKey("user"))         appConfig.mqttUser = mqtt["user"].as<String>();
+    if (mqtt.containsKey("pass"))         appConfig.mqttPass = mqtt["pass"].as<String>();
+    if (mqtt.containsKey("clientId"))     appConfig.mqttClientId = mqtt["clientId"].as<String>();
+    if (mqtt.containsKey("post_topic"))   appConfig.mqttPostTopic = mqtt["post_topic"].as<String>();
+    if (mqtt.containsKey("response_topic")) appConfig.mqttResponseTopic = mqtt["response_topic"].as<String>();
+  }
+
+  // 3. ntp_host 参数
+  if (obj.containsKey("ntp_host")) {
+    JsonArray ntpArr = obj["ntp_host"].as<JsonArray>();
+    appConfig.ntpServers.clear();
+    for (JsonVariant v : ntpArr) {
+      appConfig.ntpServers.push_back(v.as<String>());
+    }
+  }
+
+  // 4. 控制参数
+  if (obj.containsKey("post_interval")) appConfig.postInterval = obj["post_interval"];
+  if (obj.containsKey("temp_maxdif"))   appConfig.tempMaxDiff = obj["temp_maxdif"];
+
+  // 5. 温度限制参数
+  if (obj.containsKey("temp_limitout_max")) appConfig.tempLimitOutMax = obj["temp_limitout_max"];
+  if (obj.containsKey("temp_limitout_min")) appConfig.tempLimitOutMin = obj["temp_limitout_min"];
+  if (obj.containsKey("temp_limitin_max"))  appConfig.tempLimitInMax = obj["temp_limitin_max"];
+  if (obj.containsKey("temp_limitin_min"))  appConfig.tempLimitInMin = obj["temp_limitin_min"];
+
+  // 6. equipment_key
+  if (obj.containsKey("equipment_key")) appConfig.equipmentKey = obj["equipment_key"].as<String>();
+
+  // 7. keys
+  if (obj.containsKey("keys")) {
+    JsonObject keys = obj["keys"];
+    if (keys.containsKey("temp_in")) {
+      appConfig.keyTempIn = keys["temp_in"].as<String>();
+    }
+    if (keys.containsKey("temp_out")) {
+      JsonArray outKeys = keys["temp_out"].as<JsonArray>();
+      appConfig.keyTempOut.clear();
+      for (JsonVariant v : outKeys) {
+        appConfig.keyTempOut.push_back(v.as<String>());
+      }
+    }
+  }
+
+  return true;
+}
+
 // ========================= MQTT 消息回调处理 =========================
 // 解析远程发送的 JSON 控制命令并加入待执行队列
 void mqttCallback(char* topic, byte* payload, unsigned int length) {
@@ -89,6 +151,29 @@ void mqttCallback(char* topic, byte* payload, unsigned int length) {
     String action = obj["action"] | "";
     unsigned long duration = obj["duration"] | 0;
     String schedule = obj["schedule"] | "";
+
+    // 检查命令是否是配置更新
+    if (cmd == "config_update") {
+      JsonObject cfg = obj["config"].as<JsonObject>();
+      if (!cfg.isNull()) {
+        if (updateAppConfigFromJson(cfg)) {
+          // 保存更新后的配置
+          if (saveConfigToSPIFFS("/config.json")) {
+            Serial.println("[CMD] ✅ 配置已远程更新并保存");
+            // 配置保存成功后，重启设备
+            ESP.restart();
+          }
+          else {
+            Serial.println("[CMD] ❌ 配置保存失败");
+          }
+        }
+        else {
+          Serial.println("[CMD] ❌ 配置更新失败");
+        }
+      }
+      break;  // 跳过其他命令的执行
+    }
+
 
     time_t target = time(nullptr);
     if (schedule.length() > 0) {
@@ -260,6 +345,7 @@ void setup() {
   if (!initSPIFFS() || !loadConfigFromSPIFFS("/config.json")) {
     ESP.restart();
   }
+  printConfig(appConfig);  // 输出配置信息
 
   if (!connectToWiFi(20000) || !multiNTPSetup(20000)) {
     ESP.restart();

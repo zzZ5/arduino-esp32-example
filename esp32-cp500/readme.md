@@ -60,6 +60,27 @@
 * `duration`（可选）为持续时间（毫秒）
 * `schedule`（可选）为延迟执行时间（UTC）
 
+### 🎛 配置上传（通过 MQTT）
+
+通过 MQTT topic（如 `response_topic`）接收如下格式配置，会更新当前配置文件：
+
+```json
+{
+  "device": "your_equipment_key",
+  "commands": [
+    {
+      "command": "config_update",
+      "config": {
+        "temp_maxdif": 5
+        }
+    }
+  ]
+}
+```
+
+* `command` 为 `"config_update"`
+* `config` 中参数可选，具体可配置的参数见后续说明。配置修改后自动重启生效
+
 ### 🌡️ 温度采集与加热控制逻辑
 
 系统每隔一定时间自动采集：
@@ -167,4 +188,3 @@ lib_deps =
 
 ---
 
-如需我同时生成一个配套的 `/data/config.json` 示例或 `platformio.ini` 模板，也可以告诉我。

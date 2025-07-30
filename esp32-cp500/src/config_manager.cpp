@@ -118,3 +118,61 @@ void printConfig(const AppConfig& cfg) {
 
 	Serial.println("---------------------");
 }
+
+bool saveConfigToSPIFFS(const char* path) {
+	File file = SPIFFS.open(path, "w");
+	if (!file) {
+		Serial.println("[Config] Failed to open config file for writing!");
+		return false;
+	}
+
+	StaticJsonDocument<4096> doc;
+
+	// WiFi 参数
+	doc["wifi"]["ssid"] = appConfig.wifiSSID;
+	doc["wifi"]["password"] = appConfig.wifiPass;
+
+	// MQTT 参数
+	doc["mqtt"]["server"] = appConfig.mqttServer;
+	doc["mqtt"]["port"] = appConfig.mqttPort;
+	doc["mqtt"]["user"] = appConfig.mqttUser;
+	doc["mqtt"]["pass"] = appConfig.mqttPass;
+	doc["mqtt"]["clientId"] = appConfig.mqttClientId;
+	doc["mqtt"]["post_topic"] = appConfig.mqttPostTopic;
+	doc["mqtt"]["response_topic"] = appConfig.mqttResponseTopic;
+
+	// NTP 服务器
+	JsonArray ntpArr = doc["ntp_host"].to<JsonArray>();
+	for (const auto& s : appConfig.ntpServers) {
+		ntpArr.add(s);
+	}
+
+	// 控制参数
+	doc["post_interval"] = appConfig.postInterval;
+	doc["temp_maxdif"] = appConfig.tempMaxDiff;
+
+	// 温度限制
+	doc["temp_limitout_max"] = appConfig.tempLimitOutMax;
+	doc["temp_limitin_max"] = appConfig.tempLimitInMax;
+	doc["temp_limitout_min"] = appConfig.tempLimitOutMin;
+	doc["temp_limitin_min"] = appConfig.tempLimitInMin;
+
+	// keys
+	doc["equipment_key"] = appConfig.equipmentKey;
+	JsonObject keysObj = doc["keys"].to<JsonObject>();
+	keysObj["temp_in"] = appConfig.keyTempIn;
+	JsonArray outArr = keysObj["temp_out"].to<JsonArray>();
+	for (const auto& k : appConfig.keyTempOut) {
+		outArr.add(k);
+	}
+
+	bool ok = serializeJsonPretty(doc, file) > 0;
+	file.close();
+
+	if (ok)
+		Serial.println("[Config] Configuration saved.");
+	else
+		Serial.println("[Config] Failed to serialize config.");
+
+	return ok;
+}
