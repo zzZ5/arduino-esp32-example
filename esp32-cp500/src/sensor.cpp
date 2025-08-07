@@ -14,12 +14,13 @@ static int numOutSensors = 0;
 // ========== 控制引脚 ==========
 
 static int heaterPinGlobal = -1;
+static int pumpPinGlobal = -1;
 static int aerationPinGlobal = -1;
 
 /**
  * 初始化温度传感器和加热/曝气控制引脚
  */
-bool initTemperatureSensors(int tempInPin, int tempOutPin, int heaterPin, int aerationPin) {
+bool initSensors(int tempInPin, int tempOutPin, int heaterPin, int pumpPin, int aerationPin) {
 	// 内部温度（GPIO4）
 	oneWireIn = new OneWire(tempInPin);
 	sensorIn = new DallasTemperature(oneWireIn);
@@ -36,13 +37,17 @@ bool initTemperatureSensors(int tempInPin, int tempOutPin, int heaterPin, int ae
 
 	// 控制引脚初始化
 	heaterPinGlobal = heaterPin;
+	pumpPinGlobal = pumpPin;
 	aerationPinGlobal = aerationPin;
 
 	pinMode(heaterPinGlobal, OUTPUT);
 	digitalWrite(heaterPinGlobal, LOW);  // 默认关闭
 
+	pinMode(pumpPinGlobal, OUTPUT);
+	digitalWrite(pumpPinGlobal, LOW);
+
 	pinMode(aerationPinGlobal, OUTPUT);
-	digitalWrite(aerationPinGlobal, HIGH); // 默认关闭
+	digitalWrite(aerationPinGlobal, LOW); // 默认关闭
 
 	return true;
 }
@@ -86,18 +91,35 @@ void heaterOff() {
 	}
 }
 
+// ========== 水浴泵控制 ==========
+
+void pumpOn() {
+	if (pumpPinGlobal >= 0) {
+		digitalWrite(pumpPinGlobal, HIGH);
+		Serial.println("[Pump] ON");
+	}
+}
+
+void pumpOff() {
+	if (pumpPinGlobal >= 0) {
+		digitalWrite(pumpPinGlobal, LOW);
+		Serial.println("[Pump] OFF");
+	}
+}
+
+
 // ========== 曝气控制 ==========
 
 void aerationOn() {
 	if (aerationPinGlobal >= 0) {
-		digitalWrite(aerationPinGlobal, LOW);
+		digitalWrite(aerationPinGlobal, HIGH);
 		Serial.println("[Aeration] ON");
 	}
 }
 
 void aerationOff() {
 	if (aerationPinGlobal >= 0) {
-		digitalWrite(aerationPinGlobal, HIGH);
+		digitalWrite(aerationPinGlobal, LOW);
 		Serial.println("[Aeration] OFF");
 	}
 }

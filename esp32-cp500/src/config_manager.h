@@ -30,6 +30,15 @@ struct AppConfig {
 	String equipmentKey;
 	String keyTempIn;
 	std::vector<String> keyTempOut;
+
+	// 曝气定时策略（单位：毫秒）
+	bool aerationTimerEnabled;
+	uint32_t aerationInterval;
+	uint32_t aerationDuration;
+
+	// 水泵最大持续运行时间（单位：毫秒）
+	uint32_t pumpMaxDuration;
+
 };
 
 extern AppConfig appConfig;

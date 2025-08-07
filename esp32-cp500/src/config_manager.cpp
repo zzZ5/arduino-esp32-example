@@ -82,6 +82,15 @@ bool loadConfigFromSPIFFS(const char* path) {
 		}
 	}
 
+	// 曝气定时策略配置
+	JsonObject aero = doc["aeration_timer"];
+	appConfig.aerationTimerEnabled = aero["enabled"] | false;
+	appConfig.aerationInterval = aero["interval"] | 600000;   // 默认10分钟
+	appConfig.aerationDuration = aero["duration"] | 300000;    // 默认5分钟
+
+	// 水泵最大持续运行时间
+	appConfig.pumpMaxDuration = doc["pump_max_duration"] | 300000;    // 默认5分钟
+
 	return true;
 }
 
@@ -116,6 +125,11 @@ void printConfig(const AppConfig& cfg) {
 		Serial.printf("Key - TempOut[%d]: %s\n", (int)i, cfg.keyTempOut[i].c_str());
 	}
 
+	Serial.println("Aeration Timer:");
+	Serial.printf("  Enabled  : %s\n", cfg.aerationTimerEnabled ? "true" : "false");
+	Serial.printf("  Interval : %lu ms\n", cfg.aerationInterval);
+	Serial.printf("  Duration : %lu ms\n", cfg.aerationDuration);
+	Serial.printf("PumpMaxDur : %lu ms\n", cfg.pumpMaxDuration);
 	Serial.println("---------------------");
 }
 
@@ -165,6 +179,13 @@ bool saveConfigToSPIFFS(const char* path) {
 	for (const auto& k : appConfig.keyTempOut) {
 		outArr.add(k);
 	}
+
+	// 曝气定时策略
+	doc["aeration_timer"]["enabled"] = appConfig.aerationTimerEnabled;
+	doc["aeration_timer"]["interval"] = appConfig.aerationInterval;
+	doc["aeration_timer"]["duration"] = appConfig.aerationDuration;
+
+	doc["pump_max_duration"] = appConfig.pumpMaxDuration;
 
 	bool ok = serializeJsonPretty(doc, file) > 0;
 	file.close();

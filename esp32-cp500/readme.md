@@ -34,7 +34,7 @@
 ## ⚙️ 功能说明
 
 ### 📡 远程控制（通过 MQTT）
-
+  
 通过 MQTT topic（如 `response_topic`）接收如下格式控制指令：
 
 ```json

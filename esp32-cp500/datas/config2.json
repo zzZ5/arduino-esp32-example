@@ -9,15 +9,15 @@
     "user": "equipment",
     "pass": "ZNXK8888",
     "clientId": "reactor008",
-    "post_topic": "compostlab/77EtsEJT2O/post/data",
-    "response_topic": "compostlab/77EtsEJT2O/response"
+    "post_topic": "compostlab/briRKLHqoX/post/data",
+    "response_topic": "compostlab/briRKLHqoX/response"
   },
   "keys": {
-    "temp_in": "R5RnyTQQ5fJUqiD",
+    "temp_in": "rnitTnF3pYLcXS7",
     "temp_out": [
-      "Svmg6olOs0hCUPt",
-      "yQYXY2NhRApljr6",
-      "lyU0qKbusay9jh6"
+      "mS0Jyx6Idmc8FUc",
+      "KQP6yEErMV1VeEA",
+      "GqVpsbvnyrxbaAg"
     ]
   },
   "post_interval": 60000,
@@ -34,7 +34,7 @@
   "temp_limitin_max": 70,
   "temp_limitout_min": 25,
   "temp_limitin_min": 25,
-  "equipment_key": "77EtsEJT2O",
+  "equipment_key": "briRKLHqoX",
   "aeration_timer": {
     "enabled": true,
     "interval": 300000,

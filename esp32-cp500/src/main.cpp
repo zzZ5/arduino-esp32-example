@@ -12,7 +12,9 @@
 Preferences preferences;
 static const char* NVS_NAMESPACE = "my-nvs";              // NVS 命名空间
 static const char* NVS_KEY_LAST_MEAS = "lastMeas";        // 上次测量时间的 key
+static const char* NVS_KEY_LAST_AERATION = "lastAer";     // 上次曝气时间的 key
 static unsigned long prevMeasureMs = 0;                   // 上次测量的毫秒时间戳
+static unsigned long preAerationMs = 0;                   // 上次曝气的毫秒时间戳
 
 // ========================= 命令队列结构体 =========================
 // 用于存储定时控制命令（如曝气、加热器）
@@ -24,8 +26,14 @@ struct PendingCommand {
 };
 std::vector<PendingCommand> pendingCommands;
 
+
+// ========================= 泵水保护控制变量 =========================
+unsigned long pumpStartMs = 0;                 // 上次泵开启的时间
+
+
 // ========================= 全局控制状态变量 =========================
 bool heaterIsOn = false;     // 加热器状态（true=开启）
+bool pumpIsOn = false;   // 曝气状态（true=开启）
 bool aerationIsOn = false;   // 曝气状态（true=开启）
 
 // ========================= 控制命令执行函数 =========================
@@ -62,6 +70,21 @@ void executeCommand(const PendingCommand& pcmd) {
       heaterIsOn = false;
     }
   }
+  else if (pcmd.cmd == "pump") {
+    if (pcmd.action == "on") {
+      pumpOn();
+      pumpIsOn = true;
+      if (pcmd.duration > 0) {
+        delay(pcmd.duration);
+        pumpOff();
+        pumpIsOn = false;
+      }
+    }
+    else {
+      pumpOff();
+      pumpIsOn = false;
+    }
+  }
   else {
     Serial.println("[CMD] 未知命令：" + pcmd.cmd);
   }
@@ -70,27 +93,27 @@ void executeCommand(const PendingCommand& pcmd) {
 // ========================= config更新函数 =========================
 // 解析远程发送的 JSON 配置文件并进行更新，成功返回 true
 bool updateAppConfigFromJson(JsonObject obj) {
-  // 1. wifi 参数
+  // 1. WiFi 参数
   if (obj.containsKey("wifi")) {
     JsonObject wifi = obj["wifi"];
     if (wifi.containsKey("ssid"))     appConfig.wifiSSID = wifi["ssid"].as<String>();
     if (wifi.containsKey("password")) appConfig.wifiPass = wifi["password"].as<String>();
   }
 
-  // 2. mqtt 参数
+  // 2. MQTT 参数
   if (obj.containsKey("mqtt")) {
     JsonObject mqtt = obj["mqtt"];
-    if (mqtt.containsKey("server"))       appConfig.mqttServer = mqtt["server"].as<String>();
-    if (mqtt.containsKey("port"))         appConfig.mqttPort = mqtt["port"].as<int>();
-    if (mqtt.containsKey("user"))         appConfig.mqttUser = mqtt["user"].as<String>();
-    if (mqtt.containsKey("pass"))         appConfig.mqttPass = mqtt["pass"].as<String>();
-    if (mqtt.containsKey("clientId"))     appConfig.mqttClientId = mqtt["clientId"].as<String>();
-    if (mqtt.containsKey("post_topic"))   appConfig.mqttPostTopic = mqtt["post_topic"].as<String>();
+    if (mqtt.containsKey("server"))         appConfig.mqttServer = mqtt["server"].as<String>();
+    if (mqtt.containsKey("port"))           appConfig.mqttPort = mqtt["port"].as<uint16_t>();
+    if (mqtt.containsKey("user"))           appConfig.mqttUser = mqtt["user"].as<String>();
+    if (mqtt.containsKey("pass"))           appConfig.mqttPass = mqtt["pass"].as<String>();
+    if (mqtt.containsKey("clientId"))       appConfig.mqttClientId = mqtt["clientId"].as<String>();
+    if (mqtt.containsKey("post_topic"))     appConfig.mqttPostTopic = mqtt["post_topic"].as<String>();
     if (mqtt.containsKey("response_topic")) appConfig.mqttResponseTopic = mqtt["response_topic"].as<String>();
   }
 
-  // 3. ntp_host 参数
-  if (obj.containsKey("ntp_host")) {
+  // 3. NTP 服务器
+  if (obj.containsKey("ntp_host") && obj["ntp_host"].is<JsonArray>()) {
     JsonArray ntpArr = obj["ntp_host"].as<JsonArray>();
     appConfig.ntpServers.clear();
     for (JsonVariant v : ntpArr) {
@@ -99,32 +122,42 @@ bool updateAppConfigFromJson(JsonObject obj) {
   }
 
   // 4. 控制参数
-  if (obj.containsKey("post_interval")) appConfig.postInterval = obj["post_interval"];
-  if (obj.containsKey("temp_maxdif"))   appConfig.tempMaxDiff = obj["temp_maxdif"];
+  if (obj.containsKey("post_interval")) appConfig.postInterval = obj["post_interval"].as<uint32_t>();
+  if (obj.containsKey("temp_maxdif"))   appConfig.tempMaxDiff = obj["temp_maxdif"].as<uint32_t>();
 
   // 5. 温度限制参数
-  if (obj.containsKey("temp_limitout_max")) appConfig.tempLimitOutMax = obj["temp_limitout_max"];
-  if (obj.containsKey("temp_limitout_min")) appConfig.tempLimitOutMin = obj["temp_limitout_min"];
-  if (obj.containsKey("temp_limitin_max"))  appConfig.tempLimitInMax = obj["temp_limitin_max"];
-  if (obj.containsKey("temp_limitin_min"))  appConfig.tempLimitInMin = obj["temp_limitin_min"];
+  if (obj.containsKey("temp_limitout_max")) appConfig.tempLimitOutMax = obj["temp_limitout_max"].as<uint32_t>();
+  if (obj.containsKey("temp_limitout_min")) appConfig.tempLimitOutMin = obj["temp_limitout_min"].as<uint32_t>();
+  if (obj.containsKey("temp_limitin_max"))  appConfig.tempLimitInMax = obj["temp_limitin_max"].as<uint32_t>();
+  if (obj.containsKey("temp_limitin_min"))  appConfig.tempLimitInMin = obj["temp_limitin_min"].as<uint32_t>();
 
-  // 6. equipment_key
+  // 6. 设备编号
   if (obj.containsKey("equipment_key")) appConfig.equipmentKey = obj["equipment_key"].as<String>();
 
-  // 7. keys
+  // 7. 传感器 key
   if (obj.containsKey("keys")) {
     JsonObject keys = obj["keys"];
     if (keys.containsKey("temp_in")) {
       appConfig.keyTempIn = keys["temp_in"].as<String>();
     }
-    if (keys.containsKey("temp_out")) {
-      JsonArray outKeys = keys["temp_out"].as<JsonArray>();
+    if (keys.containsKey("temp_out") && keys["temp_out"].is<JsonArray>()) {
       appConfig.keyTempOut.clear();
-      for (JsonVariant v : outKeys) {
+      for (JsonVariant v : keys["temp_out"].as<JsonArray>()) {
         appConfig.keyTempOut.push_back(v.as<String>());
       }
     }
   }
+
+  // 8. 曝气定时器参数
+  if (obj.containsKey("aeration_timer")) {
+    JsonObject aeration = obj["aeration_timer"];
+    if (aeration.containsKey("enabled"))  appConfig.aerationTimerEnabled = aeration["enabled"].as<bool>();
+    if (aeration.containsKey("interval")) appConfig.aerationInterval = aeration["interval"].as<uint32_t>();
+    if (aeration.containsKey("duration")) appConfig.aerationDuration = aeration["duration"].as<uint32_t>();
+  }
+
+  // 9. 水泵运行参数
+  if (obj.containsKey("pump_max_duration")) appConfig.pumpMaxDuration = obj["pump_max_duration"].as<uint32_t>();
 
   return true;
 }
@@ -199,6 +232,33 @@ float median(std::vector<float> values) {
   return (values.size() % 2 == 0) ? (values[mid - 1] + values[mid]) / 2.0 : values[mid];
 }
 
+// ========================= 曝气控制函数 =========================
+void checkAndControlAerationByTimer() {
+  if (!appConfig.aerationTimerEnabled) return;
+  unsigned long nowMs = millis();
+
+  // 状态1：未在曝气中，检查是否应启动曝气
+  if (!aerationIsOn && (nowMs - preAerationMs >= appConfig.aerationInterval)) {
+    Serial.printf("[Aeration] 到达曝气时间，开始曝气 %lu ms\n", appConfig.aerationDuration);
+    aerationOn();
+    aerationIsOn = true;
+    preAerationMs = nowMs;  // 同时作为当前轮次的开始时间
+    // 保存持久化状态
+    if (preferences.begin(NVS_NAMESPACE, false)) {
+      preferences.putULong(NVS_KEY_LAST_AERATION, preAerationMs);
+      preferences.end();
+    }
+  }
+
+  // 状态2：正在曝气中，检查是否应停止曝气
+  if (aerationIsOn && (nowMs - preAerationMs >= appConfig.aerationDuration)) {
+    Serial.println("[Aeration] 曝气时间到，停止曝气");
+    aerationOff();
+    aerationIsOn = false;
+  }
+}
+
+
 // ========================= 主测量函数 =========================
 // 完成一次采集、状态控制、数据上传、记录时间
 bool doMeasurementAndSave() {
@@ -263,12 +323,29 @@ bool doMeasurementAndSave() {
   // 执行加热控制
   if (overheat) {
     heaterOff(); heaterIsOn = false;
+    pumpOff(); pumpIsOn = false;
   }
   else if (needHeat) {
     heaterOn(); heaterIsOn = true;
+    pumpOn(); pumpIsOn = true;
   }
   else {
     heaterOff(); heaterIsOn = false;
+    if (!pumpIsOn) {
+      pumpOn(); pumpIsOn = true;
+      pumpStartMs = millis();
+    }
+  }
+
+  // ===== 曝气定时判断 =====
+  checkAndControlAerationByTimer();
+
+
+  // ===== 泵水保护逻辑（仅在 heater 关闭时才生效）=====
+
+  if (!heaterIsOn && pumpIsOn && (millis() - pumpStartMs >= appConfig.pumpMaxDuration)) {
+    Serial.println("[Pump] 泵运行超时（非加热状态），自动关闭");
+    pumpOff(); pumpIsOn = false;
   }
 
   // 构建 JSON 数据并上传
@@ -295,6 +372,7 @@ bool doMeasurementAndSave() {
   // 系统状态字段
   doc["info"]["diff_ok"] = diffOk;
   doc["info"]["heat"] = heaterIsOn;
+  doc["info"]["pump"] = pumpIsOn;
   doc["info"]["aeration"] = aerationIsOn;
 
   String payload;
@@ -336,6 +414,7 @@ void commandTask(void* pv) {
   }
 }
 
+
 // ========================= 初始化函数 =========================
 void setup() {
   Serial.begin(115200);
@@ -358,13 +437,14 @@ void setup() {
   getMQTTClient().setCallback(mqttCallback);
   getMQTTClient().subscribe(appConfig.mqttResponseTopic.c_str());
 
-  if (!initTemperatureSensors(4, 5, 25, 26)) {
+  if (!initSensors(4, 5, 25, 26, 27)) {
     ESP.restart();
   }
 
   // 恢复测量定时
   if (preferences.begin(NVS_NAMESPACE, false)) {
     unsigned long lastSec = preferences.getULong(NVS_KEY_LAST_MEAS, 0);
+    preAerationMs = preferences.getULong(NVS_KEY_LAST_AERATION, 0);
     time_t nowSec = time(nullptr);
     unsigned long intervalSec = appConfig.postInterval / 1000UL;
     unsigned long elapsedSec = (nowSec > lastSec) ? nowSec - lastSec : 0;
@@ -380,6 +460,32 @@ void setup() {
     prevMeasureMs = millis() - appConfig.postInterval;
   }
 
+
+  // ========== 上线状态上传 ==========
+  String nowStr = getTimeString();
+  String lastMeasStr = "unknown";
+  if (preferences.begin(NVS_NAMESPACE, false)) {
+    unsigned long lastMeasSec = preferences.getULong(NVS_KEY_LAST_MEAS, 0);
+    if (lastMeasSec > 0) {
+      struct tm* tm_info = localtime((time_t*)&lastMeasSec);
+      char buffer[32];
+      strftime(buffer, sizeof(buffer), "%Y-%m-%d %H:%M:%S", tm_info);
+      lastMeasStr = String(buffer);
+    }
+    preferences.end();
+  }
+  String bootMsg = "{";
+  bootMsg += "\"device\":\"" + appConfig.equipmentKey + "\",";
+  bootMsg += "\"status\":\"online\",";
+  bootMsg += "\"timestamp\":\"" + nowStr + "\",";
+  bootMsg += "\"last_measure_time\":\"" + lastMeasStr + "\"";
+  bootMsg += "}";
+
+  bool ok = publishData(appConfig.mqttPostTopic, bootMsg, 10000);
+  Serial.println(ok ? "[MQTT] 上线消息发送成功" : "[MQTT] 上线消息发送失败");
+  Serial.println("[MQTT] Payload: " + bootMsg);
+
+  // ========== 启动任务 ==========
   xTaskCreatePinnedToCore(measurementTask, "MeasureTask", 8192, NULL, 1, NULL, 1);
   xTaskCreatePinnedToCore(commandTask, "CommandTask", 4096, NULL, 1, NULL, 1);
 
