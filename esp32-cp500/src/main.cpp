@@ -7,91 +7,73 @@
 #include "log_manager.h"
 #include <ArduinoJson.h>
 #include <vector>
+#include <algorithm>
+#include <math.h>
 
 // ========================= 持久化存储设置 =========================
 Preferences preferences;
 static const char* NVS_NAMESPACE = "my-nvs";              // NVS 命名空间
-static const char* NVS_KEY_LAST_MEAS = "lastMeas";        // 上次测量时间的 key
-static const char* NVS_KEY_LAST_AERATION = "lastAer";     // 上次曝气时间的 key
+static const char* NVS_KEY_LAST_MEAS = "lastMeas";        // 上次测量时间的 key（秒级）
+static const char* NVS_KEY_LAST_AERATION = "lastAer";     // 上次曝气时间的 key（秒级）
 static unsigned long prevMeasureMs = 0;                   // 上次测量的毫秒时间戳
-static unsigned long preAerationMs = 0;                   // 上次曝气的毫秒时间戳
+static unsigned long preAerationMs = 0;                   // 上次曝气的毫秒时间戳（定时器相位参考）
 
 // ========================= 命令队列结构体 =========================
-// 用于存储定时控制命令（如曝气、加热器）
 struct PendingCommand {
-  String cmd;              // 控制命令名（"aeration"、"heater"）
-  String action;           // 操作指令（"on"、"off"）
-  unsigned long duration;  // 控制持续时间（毫秒）
-  time_t targetTime;       // 预定执行时间（Unix 时间戳）
+  String cmd;              // "aeration"、"heater"、"pump"、或 "config_update"
+  String action;           // "on" / "off"
+  unsigned long duration;  // 持续时间（毫秒），0 表示无自动 off
+  time_t targetTime;       // 预定执行时间（Unix 时间戳，秒）
 };
 std::vector<PendingCommand> pendingCommands;
 
 
-// ========================= 泵水保护控制变量 =========================
-unsigned long pumpStartMs = 0;                 // 上次泵开启的时间
+// ========================= 泵/加热防抖 & 软锁控制变量 =========================
+unsigned long pumpStartMs = 0;                 // 最近一次泵开启的时间（用于余温循环）
+static const unsigned long HEATER_MIN_ON_MS = 30000; // 加热器最短连续开启 30s
+static const unsigned long HEATER_MIN_OFF_MS = 30000; // 加热器最短连续关闭 30s
+static unsigned long heaterToggleMs = 0;               // 最近一次加热器状态切换时间戳
+static unsigned long heaterLastOnMs = 0;               // 最近一次进入“加热开启”时刻
+static unsigned long aerationManualUntilMs = 0;        // 手动曝气软锁截止时间（ms），到期前定时器不接管
 
 
 // ========================= 全局控制状态变量 =========================
-bool heaterIsOn = false;     // 加热器状态（true=开启）
-bool pumpIsOn = false;   // 曝气状态（true=开启）
-bool aerationIsOn = false;   // 曝气状态（true=开启）
+bool heaterIsOn = false;     // 加热器状态
+bool pumpIsOn = false;       // 循环泵状态（用于水浴循环/余温循环）
+bool aerationIsOn = false;   // 曝气状态（反应曝气）
 
-// ========================= 控制命令执行函数 =========================
-// 执行控制命令（如开关加热器或风机）
-void executeCommand(const PendingCommand& pcmd) {
-  Serial.printf("[CMD] 执行：%s %s 持续 %lu ms\n", pcmd.cmd.c_str(), pcmd.action.c_str(), pcmd.duration);
-  if (pcmd.cmd == "aeration") {
-    if (pcmd.action == "on") {
-      aerationOn();
-      aerationIsOn = true;
-      if (pcmd.duration > 0) {
-        delay(pcmd.duration);
-        aerationOff();
-        aerationIsOn = false;
-      }
-    }
-    else {
-      aerationOff();
-      aerationIsOn = false;
-    }
+// ========================= 工具函数：鲁棒中位数 =========================
+// outlierThreshold > 0 时启用以“中位数”为中心的离群剔除（典型 3~5℃）
+// minValid/maxValid 用于过滤坏值（如 -127℃、85℃ 等）
+float median(std::vector<float> values,
+  float minValid = -20.0f,
+  float maxValid = 100.0f,
+  float outlierThreshold = -1.0f) {
+  // 1) 去掉 NaN 与超范围值
+  values.erase(std::remove_if(values.begin(), values.end(), [&](float v) {
+    return isnan(v) || v < minValid || v > maxValid;
+    }), values.end());
+  if (values.empty()) return NAN;
+
+  // 2) 可选：按初步中位数做离群剔除
+  std::sort(values.begin(), values.end());
+  size_t mid = values.size() / 2;
+  float med0 = (values.size() % 2 == 0) ? (values[mid - 1] + values[mid]) / 2.0f : values[mid];
+
+  if (outlierThreshold > 0) {
+    values.erase(std::remove_if(values.begin(), values.end(), [&](float v) {
+      return fabsf(v - med0) > outlierThreshold;
+      }), values.end());
+    if (values.empty()) return NAN;
+    std::sort(values.begin(), values.end());
   }
-  else if (pcmd.cmd == "heater") {
-    if (pcmd.action == "on") {
-      heaterOn();
-      heaterIsOn = true;
-      if (pcmd.duration > 0) {
-        delay(pcmd.duration);
-        heaterOff();
-        heaterIsOn = false;
-      }
-    }
-    else {
-      heaterOff();
-      heaterIsOn = false;
-    }
-  }
-  else if (pcmd.cmd == "pump") {
-    if (pcmd.action == "on") {
-      pumpOn();
-      pumpIsOn = true;
-      if (pcmd.duration > 0) {
-        delay(pcmd.duration);
-        pumpOff();
-        pumpIsOn = false;
-      }
-    }
-    else {
-      pumpOff();
-      pumpIsOn = false;
-    }
-  }
-  else {
-    Serial.println("[CMD] 未知命令：" + pcmd.cmd);
-  }
+
+  // 3) 最终中位数
+  mid = values.size() / 2;
+  return (values.size() % 2 == 0) ? (values[mid - 1] + values[mid]) / 2.0f : values[mid];
 }
 
-// ========================= config更新函数 =========================
-// 解析远程发送的 JSON 配置文件并进行更新，成功返回 true
+// ========================= 配置更新函数 =========================
 bool updateAppConfigFromJson(JsonObject obj) {
   // 1. WiFi 参数
   if (obj.containsKey("wifi")) {
@@ -112,20 +94,18 @@ bool updateAppConfigFromJson(JsonObject obj) {
     if (mqtt.containsKey("response_topic")) appConfig.mqttResponseTopic = mqtt["response_topic"].as<String>();
   }
 
-  // 3. NTP 服务器
+  // 3. NTP 服务器（向量）
   if (obj.containsKey("ntp_host") && obj["ntp_host"].is<JsonArray>()) {
     JsonArray ntpArr = obj["ntp_host"].as<JsonArray>();
     appConfig.ntpServers.clear();
-    for (JsonVariant v : ntpArr) {
-      appConfig.ntpServers.push_back(v.as<String>());
-    }
+    for (JsonVariant v : ntpArr) appConfig.ntpServers.push_back(v.as<String>());
   }
 
   // 4. 控制参数
   if (obj.containsKey("post_interval")) appConfig.postInterval = obj["post_interval"].as<uint32_t>();
   if (obj.containsKey("temp_maxdif"))   appConfig.tempMaxDiff = obj["temp_maxdif"].as<uint32_t>();
 
-  // 5. 温度限制参数
+  // 5. 温度限制参数（说明：这里只保留 out_max 的硬保护；in_max 只参与归一化，不做硬切断）
   if (obj.containsKey("temp_limitout_max")) appConfig.tempLimitOutMax = obj["temp_limitout_max"].as<uint32_t>();
   if (obj.containsKey("temp_limitout_min")) appConfig.tempLimitOutMin = obj["temp_limitout_min"].as<uint32_t>();
   if (obj.containsKey("temp_limitin_max"))  appConfig.tempLimitInMax = obj["temp_limitin_max"].as<uint32_t>();
@@ -137,9 +117,7 @@ bool updateAppConfigFromJson(JsonObject obj) {
   // 7. 传感器 key
   if (obj.containsKey("keys")) {
     JsonObject keys = obj["keys"];
-    if (keys.containsKey("temp_in")) {
-      appConfig.keyTempIn = keys["temp_in"].as<String>();
-    }
+    if (keys.containsKey("temp_in")) appConfig.keyTempIn = keys["temp_in"].as<String>();
     if (keys.containsKey("temp_out") && keys["temp_out"].is<JsonArray>()) {
       appConfig.keyTempOut.clear();
       for (JsonVariant v : keys["temp_out"].as<JsonArray>()) {
@@ -150,25 +128,26 @@ bool updateAppConfigFromJson(JsonObject obj) {
 
   // 8. 曝气定时器参数
   if (obj.containsKey("aeration_timer")) {
-    JsonObject aeration = obj["aeration_timer"];
-    if (aeration.containsKey("enabled"))  appConfig.aerationTimerEnabled = aeration["enabled"].as<bool>();
-    if (aeration.containsKey("interval")) appConfig.aerationInterval = aeration["interval"].as<uint32_t>();
-    if (aeration.containsKey("duration")) appConfig.aerationDuration = aeration["duration"].as<uint32_t>();
+    JsonObject aer = obj["aeration_timer"];
+    if (aer.containsKey("enabled"))  appConfig.aerationTimerEnabled = aer["enabled"].as<bool>();
+    if (aer.containsKey("interval")) appConfig.aerationInterval = aer["interval"].as<uint32_t>();
+    if (aer.containsKey("duration")) appConfig.aerationDuration = aer["duration"].as<uint32_t>();
   }
 
-  // 9. 水泵运行参数
+  // 9. 水泵余温循环最长时长
   if (obj.containsKey("pump_max_duration")) appConfig.pumpMaxDuration = obj["pump_max_duration"].as<uint32_t>();
 
   return true;
 }
 
-// ========================= MQTT 消息回调处理 =========================
-// 解析远程发送的 JSON 控制命令并加入待执行队列
+
+// ========================= MQTT 消息回调 =========================
+// 支持命令数组：[{command, action, duration(ms), schedule("YYYY-mm-dd HH:MM:SS"), ...}]
 void mqttCallback(char* topic, byte* payload, unsigned int length) {
-  StaticJsonDocument<1024> doc;
+  StaticJsonDocument<2048> doc;
   DeserializationError err = deserializeJson(doc, payload, length);
   if (err) {
-    Serial.println("[MQTT] JSON 解析错误：" + String(err.c_str()));
+    Serial.println(String("[MQTT] JSON 解析错误：") + err.c_str());
     return;
   }
 
@@ -182,18 +161,16 @@ void mqttCallback(char* topic, byte* payload, unsigned int length) {
     JsonObject obj = v.as<JsonObject>();
     String cmd = obj["command"] | "";
     String action = obj["action"] | "";
-    unsigned long duration = obj["duration"] | 0;
+    unsigned long duration = obj["duration"] | 0UL;
     String schedule = obj["schedule"] | "";
 
-    // 检查命令是否是配置更新
+    // 配置更新命令：实时应用并保存，然后重启
     if (cmd == "config_update") {
       JsonObject cfg = obj["config"].as<JsonObject>();
       if (!cfg.isNull()) {
         if (updateAppConfigFromJson(cfg)) {
-          // 保存更新后的配置
           if (saveConfigToSPIFFS("/config.json")) {
-            Serial.println("[CMD] ✅ 配置已远程更新并保存");
-            // 配置保存成功后，重启设备
+            Serial.println("[CMD] ✅ 配置已远程更新并保存，设备重启以生效");
             ESP.restart();
           }
           else {
@@ -204,18 +181,19 @@ void mqttCallback(char* topic, byte* payload, unsigned int length) {
           Serial.println("[CMD] ❌ 配置更新失败");
         }
       }
-      break;  // 跳过其他命令的执行
+      continue; // 跳过后续排程
     }
 
-
+    // 解析 schedule（如果有），否则用当前时间
     time_t target = time(nullptr);
     if (schedule.length() > 0) {
       struct tm schedTime = {};
+      // 注意：某些工具链不支持 strptime
       if (strptime(schedule.c_str(), "%Y-%m-%d %H:%M:%S", &schedTime)) {
         target = mktime(&schedTime);
       }
       else {
-        Serial.println("[MQTT] 错误的时间格式");
+        Serial.println("[MQTT] 错误的时间格式（期望 YYYY-MM-DD HH:MM:SS）");
         continue;
       }
     }
@@ -224,40 +202,72 @@ void mqttCallback(char* topic, byte* payload, unsigned int length) {
   }
 }
 
-// ========================= 中位数计算工具函数 =========================
-float median(std::vector<float> values, float minValid = -20.0, float maxValid = 100.0, float outlierThreshold = -1) {
-  // 1. 去掉 NaN 和超范围值
-  values.erase(std::remove_if(values.begin(), values.end(), [&](float v) {
-    return isnan(v) || v < minValid || v > maxValid;
-    }), values.end());
+// ========================= 非阻塞命令执行 =========================
+// “打开 + 安排定时关闭”为一对儿；不使用 delay()，避免阻塞任务
+void executeCommand(const PendingCommand& pcmd) {
+  Serial.printf("[CMD] 执行：%s %s 持续 %lu ms\n",
+    pcmd.cmd.c_str(), pcmd.action.c_str(), pcmd.duration);
 
-  if (values.empty()) return 0.0;
+  auto scheduleOff = [&](const String& what, unsigned long ms) {
+    if (ms == 0) return; // 0 表示不自动关闭
+    PendingCommand offCmd;
+    offCmd.cmd = what;
+    offCmd.action = "off";
+    offCmd.duration = 0;
+    offCmd.targetTime = time(nullptr) + (time_t)(ms / 1000UL);
+    pendingCommands.push_back(offCmd);
+    Serial.printf("[CMD] 已计划 %s 定时关闭：%lu ms 后\n", what.c_str(), ms);
+    };
 
-  // 2. 可选：去掉离群值（以初步中位数为基准）
-  if (outlierThreshold > 0) {
-    // 先算初步中位数
-    std::sort(values.begin(), values.end());
-    size_t mid = values.size() / 2;
-    float med = (values.size() % 2 == 0) ? (values[mid - 1] + values[mid]) / 2.0 : values[mid];
-
-    // 过滤离群值
-    values.erase(std::remove_if(values.begin(), values.end(), [&](float v) {
-      return fabs(v - med) > outlierThreshold;
-      }), values.end());
-
-    if (values.empty()) return 0.0;
+  if (pcmd.cmd == "aeration") {
+    if (pcmd.action == "on") {
+      aerationOn(); aerationIsOn = true;
+      if (pcmd.duration > 0) aerationManualUntilMs = millis() + pcmd.duration;
+      scheduleOff("aeration", pcmd.duration);
+    }
+    else {
+      aerationOff(); aerationIsOn = false;
+      aerationManualUntilMs = 0;
+    }
   }
-
-  // 3. 最终计算中位数
-  std::sort(values.begin(), values.end());
-  size_t mid = values.size() / 2;
-  return (values.size() % 2 == 0) ? (values[mid - 1] + values[mid]) / 2.0 : values[mid];
+  else if (pcmd.cmd == "heater") {
+    if (pcmd.action == "on") {
+      heaterOn(); heaterIsOn = true;
+      heaterToggleMs = millis();
+      heaterLastOnMs = heaterToggleMs;
+      // 加热时泵常开以提高换热效率
+      if (!pumpIsOn) { pumpOn(); pumpIsOn = true; }
+      scheduleOff("heater", pcmd.duration);
+    }
+    else {
+      heaterOff(); heaterIsOn = false;
+      heaterToggleMs = millis();
+      // 进入余温循环窗口
+      if (!pumpIsOn) { pumpOn(); pumpIsOn = true; }
+      pumpStartMs = millis();
+    }
+  }
+  else if (pcmd.cmd == "pump") {
+    if (pcmd.action == "on") {
+      pumpOn(); pumpIsOn = true; pumpStartMs = millis();
+      scheduleOff("pump", pcmd.duration);
+    }
+    else {
+      pumpOff(); pumpIsOn = false;
+    }
+  }
+  else {
+    Serial.println("[CMD] 未知命令：" + pcmd.cmd);
+  }
 }
 
-
-// ========================= 曝气控制函数 =========================
+// ========================= 定时曝气控制 =========================
 void checkAndControlAerationByTimer() {
   if (!appConfig.aerationTimerEnabled) return;
+
+  // 手动软锁未过期 → 暂停定时器接管，避免打架
+  if (aerationManualUntilMs != 0 && (long)(millis() - aerationManualUntilMs) < 0) return;
+
   unsigned long nowMs = millis();
   time_t nowEpoch = time(nullptr);
 
@@ -266,134 +276,150 @@ void checkAndControlAerationByTimer() {
     Serial.printf("[Aeration] 到达曝气时间，开始曝气 %lu ms\n", appConfig.aerationDuration);
     aerationOn();
     aerationIsOn = true;
-    preAerationMs = nowMs;  // 同时作为当前轮次的开始时间
-    // 保存持久化状态
+    preAerationMs = nowMs;  // 作为本轮开始
     if (preferences.begin(NVS_NAMESPACE, false)) {
       preferences.putULong(NVS_KEY_LAST_AERATION, nowEpoch);
       preferences.end();
     }
   }
 
-  // 状态2：正在曝气中，检查是否应停止曝气
+  // 状态2：正在曝气中，检查是否应停止
   if (aerationIsOn && (nowMs - preAerationMs >= appConfig.aerationDuration)) {
     Serial.println("[Aeration] 曝气时间到，停止曝气");
     aerationOff();
     aerationIsOn = false;
-    preAerationMs = nowMs;  // 同时作为当前轮次的开始时间
-    // 保存持久化状态
+    preAerationMs = nowMs;  // 作为关相位起点
     if (preferences.begin(NVS_NAMESPACE, false)) {
       preferences.putULong(NVS_KEY_LAST_AERATION, nowEpoch);
       preferences.end();
     }
   }
-  return;
 }
 
 
-// ========================= 主测量函数 =========================
-// 完成一次采集、状态控制、数据上传、记录时间
+// ========================= 主测量 + 控制 + 上报 =========================
 bool doMeasurementAndSave() {
   Serial.println("[Measure] 采集温度");
 
-  float t_in = readTempIn();                     // 内部温度
-  std::vector<float> t_outs = readTempOut();     // 外部温度（多个）
-  String ts = getTimeString();                   // 时间字符串
-  time_t nowEpoch = time(nullptr);               // 当前 Unix 时间戳
+  float t_in = readTempIn();                 // 核心温度（内部）
+  std::vector<float> t_outs = readTempOut(); // 外浴多个探头
 
-
-  // 温度保护与加热判断
-  float out_max = appConfig.tempLimitOutMax;
-  float out_min = appConfig.tempLimitOutMin;
-  float in_max = appConfig.tempLimitInMax;
-  float in_min = appConfig.tempLimitInMin;
-
-  // 获取外部温度中位数和当前温差
-  float med_out = median(t_outs);
-  float diff_now = t_in - med_out;
-
-  const float diff_max = (float)appConfig.tempMaxDiff;        // 高温端最大允许差（例如 10℃）
-  const float diff_min = max(0.1f, diff_max * 0.02f);         // 低温端最小允许差（更严格）
-  const float n_curve = 2.0f;                                 // n次曲线的n：>1 越到高温越放宽
-
-  bool needHeat = false;
-  bool overheat = false;
-  String msg;  // 用于储存本轮判断信息
-
-  // ---- 过热保护 ----
-  if (med_out >= out_max) {
-    overheat = true;
-    msg = String("[Heat-nCurve] 外部温度 ") + String(med_out, 2) +
-      " ≥ " + String(out_max, 2) + "，强制冷却";
+  // 外浴空读保护：若全部失败，跳过本轮控制（避免错误动作）
+  if (t_outs.empty()) {
+    Serial.println("[Measure] 外部温度读数为空，跳过本轮控制");
+    return false;
   }
 
-  // ---- min 优先逻辑 ----
-  if (!overheat) {
+  // 鲁棒中位数：-20~100℃范围，-1.0不开启离群剔除（可根据现场噪声改为 3~5）
+  float med_out = median(t_outs, -20.0f, 100.0f, -1.0f);
+  if (isnan(med_out)) {
+    Serial.println("[Measure] 外部温度有效值为空，跳过本轮控制");
+    return false;
+  }
+
+  String ts = getTimeString();               // 时间字符串
+  time_t nowEpoch = time(nullptr);           // Unix 时间戳
+
+  // 配置快捷变量
+  const float out_max = (float)appConfig.tempLimitOutMax;
+  const float out_min = (float)appConfig.tempLimitOutMin;
+  const float in_max = (float)appConfig.tempLimitInMax;  // 仅用于归一化，不做硬切断
+  const float in_min = (float)appConfig.tempLimitInMin;
+
+  // 当前差值：核心 - 外浴（正数表示外浴更冷，有保温空间）
+  float diff_now = t_in - med_out;
+
+  // ---- 仅外浴上限的硬保护 ----
+  bool hardCool = false;
+  String msg;
+
+  if (med_out >= out_max) {
+    hardCool = true;
+    msg = String("[SAFETY] 外部温度 ") + String(med_out, 2) +
+      " ≥ " + String(out_max, 2) + "，强制冷却（关加热，开泵）";
+  }
+
+  // ---- n-curve 目标差值阈值（不触发硬切时才计算）----
+  bool wantHeat = false; // “希望开启加热”的判定
+  String reason;
+
+  if (!hardCool) {
     if (t_in <= in_min) {
-      // 低于最小值，强制加热
-      needHeat = true;
-      msg = String("[Heat-nCurve] 内部温度 ") + String(t_in, 2) +
-        " ≤ " + String(in_min, 2) + "，强制加热";
+      // 低于最小内部温度 → 强制补热，确保堆体不被水浴过度带走热量
+      wantHeat = true;
+      reason = String("内部温度 ") + String(t_in, 2) + " ≤ " + String(in_min, 2) + "（低于最小值，强制补热）";
     }
     else {
-      // 归一化内部温度到 [0,1]
+      // 归一化 u ∈ [0,1]：t_in 越高，允许的差值越大
       float u = 0.0f;
       if (in_max > in_min) {
         float t_ref = min(max(t_in, in_min), in_max);
         u = (t_ref - in_min) / (in_max - in_min);
       }
-
-      // 计算 n 次曲线的差值阈值
-      float DIFF_ON_MAX = diff_min + (diff_max - diff_min) * pow(u, n_curve);
+      const float diff_max = (float)appConfig.tempMaxDiff;       // 高温端最大允许差
+      const float diff_min = max(0.1f, diff_max * 0.02f);        // 低温端最小允许差
+      const float n_curve = 2.0f;                               // n>1 高温放宽更明显
+      float DIFF_ON_MAX = diff_min + (diff_max - diff_min) * powf(u, n_curve);
 
       if (diff_now > DIFF_ON_MAX) {
-        // 差值大于目标 → 外壁太冷 → 开加热
-        needHeat = true;
-        msg = String("[Heat-nCurve] 开始加热: diff=") + String(diff_now, 2) +
-          " > 阈值 " + String(DIFF_ON_MAX, 2) +
-          " (u=" + String(u, 2) + ", n=" + String(n_curve, 2) + ")";
+        wantHeat = true;  // 外浴偏冷，需补热
+        reason = String("diff=") + String(diff_now, 2) + " > 阈值 " + String(DIFF_ON_MAX, 2) +
+          "（外浴偏冷，需要补热）";
       }
       else {
-        // 差值小于目标 → 外壁够热 → 停加热
-        needHeat = false;
-        msg = String("[Heat-nCurve] 停止加热: diff=") + String(diff_now, 2) +
-          " ≤ 阈值 " + String(DIFF_ON_MAX, 2) +
-          " (u=" + String(u, 2) + ", n=" + String(n_curve, 2) + ")";
+        wantHeat = false; // 外浴够暖
+        reason = String("diff=") + String(diff_now, 2) + " ≤ 阈值 " + String(DIFF_ON_MAX, 2) +
+          "（外浴已足够热）";
       }
+    }
+
+    // ---- 最小开停机时间抑制抖动 ----
+    unsigned long nowMs = millis();
+    if (wantHeat && !heaterIsOn && (nowMs - heaterToggleMs) < HEATER_MIN_OFF_MS) {
+      wantHeat = false; // 刚关不久，不允许立刻再开
+      reason += " | 抑制：未到最小关断间隔";
+    }
+    if (!wantHeat && heaterIsOn && (nowMs - heaterToggleMs) < HEATER_MIN_ON_MS) {
+      wantHeat = true;  // 刚开不久，不允许立刻再关
+      reason += " | 抑制：未到最小开机间隔";
     }
   }
 
-
-  // 执行加热控制
-  if (overheat) {
-    heaterOff(); heaterIsOn = false;
-    pumpOff(); pumpIsOn = false;
-  }
-  else if (needHeat) {
-    heaterOn(); heaterIsOn = true;
-    pumpOn(); pumpIsOn = true;
+  // ---- 执行动作 ----
+  unsigned long nowMs = millis();
+  if (hardCool) {
+    // 外浴过热：直接进入强制冷却（关加热，开泵）
+    if (heaterIsOn) { heaterOff(); heaterIsOn = false; heaterToggleMs = nowMs; }
+    if (!pumpIsOn) { pumpOn();  pumpIsOn = true; }
+    pumpStartMs = nowMs; // 从此刻开始计余温/降温
   }
   else {
-    heaterOff(); heaterIsOn = false;
-    if (!pumpIsOn) {
+    // 按 wantHeat 控制
+    if (wantHeat && !heaterIsOn) {
+      heaterOn(); heaterIsOn = true; heaterToggleMs = nowMs; heaterLastOnMs = nowMs;
+      // 加热时泵常开提高换热效率
+      if (!pumpIsOn) { pumpOn(); pumpIsOn = true; }
+    }
+    else if (!wantHeat && heaterIsOn) {
+      heaterOff(); heaterIsOn = false; heaterToggleMs = nowMs;
+      // 进入余温循环窗口（限时开泵）
+      if (!pumpIsOn) { pumpOn(); pumpIsOn = true; }
+      pumpStartMs = nowMs;
+    }
+
+    // 泵：加热时常开；非加热时仅在余温循环窗口内运行，超时即停
+    if (heaterIsOn && !pumpIsOn) {
       pumpOn(); pumpIsOn = true;
-      pumpStartMs = millis();
+    }
+    if (!heaterIsOn && pumpIsOn && (nowMs - pumpStartMs >= appConfig.pumpMaxDuration)) {
+      pumpOff(); pumpIsOn = false;
     }
   }
 
   // ===== 曝气定时判断 =====
   checkAndControlAerationByTimer();
 
-
-  // ===== 泵水保护逻辑（仅在 heater 关闭时才生效）=====
-
-
-
-  if (!heaterIsOn && pumpIsOn && (millis() - pumpStartMs >= appConfig.pumpMaxDuration)) {
-    Serial.println("[Pump] 泵运行超时（非加热状态），自动关闭");
-    pumpOff(); pumpIsOn = false;
-  }
-
-  // 构建 JSON 数据并上传
+  // ===== 构建 JSON 并上传 =====
   StaticJsonDocument<1024> doc;
   JsonArray data = doc.createNestedArray("data");
 
@@ -404,18 +430,17 @@ bool doMeasurementAndSave() {
 
   for (size_t i = 0; i < t_outs.size(); ++i) {
     JsonObject obj = data.createNestedObject();
-    if (i < appConfig.keyTempOut.size()) {
-      obj["key"] = appConfig.keyTempOut[i];
-    }
-    else {
-      obj["key"] = appConfig.keyTempOut[0] + "_X" + String(i);
-    }
+    if (i < appConfig.keyTempOut.size()) obj["key"] = appConfig.keyTempOut[i];
+    else obj["key"] = appConfig.keyTempOut[0] + "_X" + String(i);
     obj["value"] = t_outs[i];
     obj["measured_time"] = ts;
   }
 
-  // 系统状态字段
-  doc["info"]["msg"] = msg;
+  // info 字段：用于可视化“判定→动作”链路
+  doc["info"]["msg"] = (hardCool ? msg : (String("[Heat-nCurve] ") + reason +
+    String(" | t_in=") + String(t_in, 1) +
+    String(", t_out_med=") + String(med_out, 1) +
+    String(", diff=") + String(diff_now, 1)));
   doc["info"]["heat"] = heaterIsOn;
   doc["info"]["pump"] = pumpIsOn;
   doc["info"]["aeration"] = aerationIsOn;
@@ -423,15 +448,16 @@ bool doMeasurementAndSave() {
   String payload;
   serializeJson(doc, payload);
 
-  if (publishData(appConfig.mqttPostTopic, payload, 10000)) {
+  bool ok = publishData(appConfig.mqttPostTopic, payload, 10000);
+  if (ok) {
     if (preferences.begin(NVS_NAMESPACE, false)) {
       preferences.putULong(NVS_KEY_LAST_MEAS, nowEpoch);
       preferences.end();
     }
-    return true;
   }
-  return false;
+  return ok;
 }
+
 
 // ========================= 测量任务 =========================
 void measurementTask(void* pv) {
@@ -448,93 +474,86 @@ void measurementTask(void* pv) {
 void commandTask(void* pv) {
   while (true) {
     time_t now = time(nullptr);
-    for (int i = 0; i < pendingCommands.size(); i++) {
+    for (int i = 0; i < (int)pendingCommands.size(); ++i) {
       if (now >= pendingCommands[i].targetTime) {
         executeCommand(pendingCommands[i]);
         pendingCommands.erase(pendingCommands.begin() + i);
-        i--;
+        --i;
       }
     }
-    vTaskDelay(1000 / portTICK_PERIOD_MS);
+    vTaskDelay(200 / portTICK_PERIOD_MS);
   }
 }
 
 
-// ========================= 初始化函数 =========================
+// ========================= 初始化 =========================
 void setup() {
   Serial.begin(115200);
   Serial.println("[System] 启动中");
 
   initLogSystem();
   if (!initSPIFFS() || !loadConfigFromSPIFFS("/config.json")) {
+    Serial.println("[System] 配置加载失败，重启");
     ESP.restart();
   }
-  printConfig(appConfig);  // 输出配置信息
+  printConfig(appConfig);
 
   if (!connectToWiFi(20000) || !multiNTPSetup(20000)) {
+    Serial.println("[System] 网络/NTP失败，重启");
     ESP.restart();
   }
-
   if (!connectToMQTT(20000)) {
+    Serial.println("[System] MQTT失败，重启");
     ESP.restart();
   }
 
+  // 订阅下行
   getMQTTClient().setCallback(mqttCallback);
   getMQTTClient().subscribe(appConfig.mqttResponseTopic.c_str());
 
+  // 传感器初始化（按你的引脚定义）
   if (!initSensors(4, 5, 25, 26, 27)) {
+    Serial.println("[System] 传感器初始化失败，重启");
     ESP.restart();
   }
 
-  // 恢复测量定时 & 曝气相位起点（ms基准）
+  // ==== 恢复测量/曝气相位 ====
   if (preferences.begin(NVS_NAMESPACE, /*readOnly=*/true)) {
     unsigned long lastSecMea = preferences.getULong(NVS_KEY_LAST_MEAS, 0);
     unsigned long lastSecAera = preferences.getULong(NVS_KEY_LAST_AERATION, 0);
     time_t nowSec = time(nullptr);
 
-    // ==== 恢复曝气相位起点（仅用时间戳，不管相位 on/off）====
+    // 恢复曝气相位起点（仅用时间戳，不管相位 on/off）
     if (nowSec > 0 && lastSecAera > 0) {
-      unsigned long long elapsedAeraMs64 =
-        (unsigned long long)(nowSec - lastSecAera) * 1000ULL;
-      // 映射到当前 millis() 基准（截断到 32 位）
+      unsigned long long elapsedAeraMs64 = (unsigned long long)(nowSec - lastSecAera) * 1000ULL;
       preAerationMs = millis() - (unsigned long)elapsedAeraMs64;
     }
     else {
-      // 第一次运行或 NTP 未就绪：为了尽快进入第一轮，可认为关相位已过完
+      // 第一次运行或 NTP 未就绪 → 让“关相位”算已过完，好尽快进入首轮
       preAerationMs = millis() - appConfig.aerationInterval;
     }
 
-    // ==== 恢复测量起点 ====
+    // 恢复测量起点
     if (nowSec > 0 && lastSecMea > 0) {
       unsigned long intervalSec = appConfig.postInterval / 1000UL;
       unsigned long elapsedSec = (nowSec > lastSecMea) ? (nowSec - lastSecMea) : 0UL;
-
-      if (elapsedSec >= intervalSec) {
-        // 立刻测
-        prevMeasureMs = millis() - appConfig.postInterval;
-      }
-      else {
-        // 再等剩余时间
-        prevMeasureMs = millis() - (appConfig.postInterval - elapsedSec * 1000UL);
-      }
+      if (elapsedSec >= intervalSec) prevMeasureMs = millis() - appConfig.postInterval;  // 立刻测
+      else prevMeasureMs = millis() - (appConfig.postInterval - elapsedSec * 1000UL);    // 等剩余
     }
     else {
-      prevMeasureMs = millis() - appConfig.postInterval;
+      prevMeasureMs = millis() - appConfig.postInterval; // 上电立刻测一轮
     }
-
     preferences.end();
   }
   else {
-    // 读 NVS 失败时的保守初始化
     prevMeasureMs = millis() - appConfig.postInterval;
     preAerationMs = millis() - appConfig.aerationInterval;
   }
 
-
-  // ========== 上线状态上传 ==========
+  // ==== 上线消息 ====
   String nowStr = getTimeString();
   String lastMeasStr = "unknown";
-  if (preferences.begin(NVS_NAMESPACE, false)) {
+  if (preferences.begin(NVS_NAMESPACE, true)) {
     unsigned long lastMeasSec = preferences.getULong(NVS_KEY_LAST_MEAS, 0);
     if (lastMeasSec > 0) {
       struct tm* tm_info = localtime((time_t*)&lastMeasSec);
@@ -555,7 +574,7 @@ void setup() {
   Serial.println(ok ? "[MQTT] 上线消息发送成功" : "[MQTT] 上线消息发送失败");
   Serial.println("[MQTT] Payload: " + bootMsg);
 
-  // ========== 启动任务 ==========
+  // ==== 启动任务 ====
   xTaskCreatePinnedToCore(measurementTask, "MeasureTask", 8192, NULL, 1, NULL, 1);
   xTaskCreatePinnedToCore(commandTask, "CommandTask", 4096, NULL, 1, NULL, 1);
 
