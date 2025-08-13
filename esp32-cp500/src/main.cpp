@@ -225,12 +225,35 @@ void mqttCallback(char* topic, byte* payload, unsigned int length) {
 }
 
 // ========================= 中位数计算工具函数 =========================
-float median(std::vector<float> values) {
+float median(std::vector<float> values, float minValid = -20.0, float maxValid = 100.0, float outlierThreshold = -1) {
+  // 1. 去掉 NaN 和超范围值
+  values.erase(std::remove_if(values.begin(), values.end(), [&](float v) {
+    return isnan(v) || v < minValid || v > maxValid;
+    }), values.end());
+
   if (values.empty()) return 0.0;
+
+  // 2. 可选：去掉离群值（以初步中位数为基准）
+  if (outlierThreshold > 0) {
+    // 先算初步中位数
+    std::sort(values.begin(), values.end());
+    size_t mid = values.size() / 2;
+    float med = (values.size() % 2 == 0) ? (values[mid - 1] + values[mid]) / 2.0 : values[mid];
+
+    // 过滤离群值
+    values.erase(std::remove_if(values.begin(), values.end(), [&](float v) {
+      return fabs(v - med) > outlierThreshold;
+      }), values.end());
+
+    if (values.empty()) return 0.0;
+  }
+
+  // 3. 最终计算中位数
   std::sort(values.begin(), values.end());
   size_t mid = values.size() / 2;
   return (values.size() % 2 == 0) ? (values[mid - 1] + values[mid]) / 2.0 : values[mid];
 }
+
 
 // ========================= 曝气控制函数 =========================
 void checkAndControlAerationByTimer() {
@@ -289,7 +312,7 @@ bool doMeasurementAndSave() {
   float diff_now = t_in - med_out;
 
   const float diff_max = (float)appConfig.tempMaxDiff;        // 高温端最大允许差（例如 10℃）
-  const float diff_min = max(0.1f, diff_max * 0.20f);         // 低温端最小允许差（更严格）
+  const float diff_min = max(0.1f, diff_max * 0.02f);         // 低温端最小允许差（更严格）
   const float n_curve = 2.0f;                                 // n次曲线的n：>1 越到高温越放宽
 
   bool needHeat = false;
