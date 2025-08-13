@@ -8,7 +8,7 @@
     "port": 1883,
     "user": "equipment",
     "pass": "ZNXK8888",
-    "clientId": "reactor008",
+    "clientId": "cp500_001",
     "post_topic": "compostlab/77EtsEJT2O/post/data",
     "response_topic": "compostlab/77EtsEJT2O/response"
   },
@@ -30,8 +30,8 @@
     "202.120.2.101"
   ],
   "temp_maxdif": 5,
-  "temp_limitout_max": 75,
-  "temp_limitin_max": 70,
+  "temp_limitout_max": 70,
+  "temp_limitin_max": 75,
   "temp_limitout_min": 25,
   "temp_limitin_min": 25,
   "equipment_key": "77EtsEJT2O",

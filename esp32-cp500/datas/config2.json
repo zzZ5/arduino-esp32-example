@@ -8,7 +8,7 @@
     "port": 1883,
     "user": "equipment",
     "pass": "ZNXK8888",
-    "clientId": "reactor008",
+    "clientId": "cp500_002",
     "post_topic": "compostlab/briRKLHqoX/post/data",
     "response_topic": "compostlab/briRKLHqoX/response"
   },
@@ -30,9 +30,9 @@
     "202.120.2.101"
   ],
   "temp_maxdif": 5,
-  "temp_limitout_max": 75,
-  "temp_limitin_max": 70,
-  "temp_limitout_min": 25,
+  "temp_limitout_max": 70,
+  "temp_limitin_max": 75,
+  "temp_limitout_min": 65,
   "temp_limitin_min": 25,
   "equipment_key": "briRKLHqoX",
   "aeration_timer": {
@@ -40,5 +40,5 @@
     "interval": 300000,
     "duration": 300000
   },
-  "pump_max_duration": 300000
+  "pump_max_duration": 120000
 }

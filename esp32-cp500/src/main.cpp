@@ -236,6 +236,7 @@ float median(std::vector<float> values) {
 void checkAndControlAerationByTimer() {
   if (!appConfig.aerationTimerEnabled) return;
   unsigned long nowMs = millis();
+  time_t nowEpoch = time(nullptr);
 
   // 状态1：未在曝气中，检查是否应启动曝气
   if (!aerationIsOn && (nowMs - preAerationMs >= appConfig.aerationInterval)) {
@@ -245,7 +246,7 @@ void checkAndControlAerationByTimer() {
     preAerationMs = nowMs;  // 同时作为当前轮次的开始时间
     // 保存持久化状态
     if (preferences.begin(NVS_NAMESPACE, false)) {
-      preferences.putULong(NVS_KEY_LAST_AERATION, preAerationMs);
+      preferences.putULong(NVS_KEY_LAST_AERATION, nowEpoch);
       preferences.end();
     }
   }
@@ -255,7 +256,14 @@ void checkAndControlAerationByTimer() {
     Serial.println("[Aeration] 曝气时间到，停止曝气");
     aerationOff();
     aerationIsOn = false;
+    preAerationMs = nowMs;  // 同时作为当前轮次的开始时间
+    // 保存持久化状态
+    if (preferences.begin(NVS_NAMESPACE, false)) {
+      preferences.putULong(NVS_KEY_LAST_AERATION, nowEpoch);
+      preferences.end();
+    }
   }
+  return;
 }
 
 
@@ -269,16 +277,6 @@ bool doMeasurementAndSave() {
   String ts = getTimeString();                   // 时间字符串
   time_t nowEpoch = time(nullptr);               // 当前 Unix 时间戳
 
-  // 计算温差最大值判断是否合理
-  float max_diff = 0.0;
-  for (float t : t_outs) {
-    float diff = abs(t - t_in);
-    if (diff > max_diff) max_diff = diff;
-  }
-  bool diffOk = (max_diff <= appConfig.tempMaxDiff);
-
-  // 获取外部温度中位数
-  float med_out = median(t_outs);
 
   // 温度保护与加热判断
   float out_max = appConfig.tempLimitOutMax;
@@ -286,39 +284,61 @@ bool doMeasurementAndSave() {
   float in_max = appConfig.tempLimitInMax;
   float in_min = appConfig.tempLimitInMin;
 
+  // 获取外部温度中位数和当前温差
+  float med_out = median(t_outs);
+  float diff_now = t_in - med_out;
+
+  const float diff_max = (float)appConfig.tempMaxDiff;        // 高温端最大允许差（例如 10℃）
+  const float diff_min = max(0.1f, diff_max * 0.20f);         // 低温端最小允许差（更严格）
+  const float n_curve = 2.0f;                                 // n次曲线的n：>1 越到高温越放宽
+
   bool needHeat = false;
   bool overheat = false;
+  String msg;  // 用于储存本轮判断信息
 
+  // ---- 过热保护 ----
   if (med_out >= out_max) {
-    Serial.printf("[Heat] 外部温度 %.2f ≥ 上限 %.2f，关闭加热器\n", med_out, out_max);
     overheat = true;
-  }
-  else if (med_out <= out_min) {
-    Serial.printf("[Heat] 外部温度 %.2f ≤ 下限 %.2f，开启加热器\n", med_out, out_min);
-    needHeat = true;
+    msg = String("[Heat-nCurve] 外部温度 ") + String(med_out, 2) +
+      " ≥ " + String(out_max, 2) + "，强制冷却";
   }
 
-  if (t_in >= in_max) {
-    Serial.printf("[Heat] 内部温度 %.2f ≥ 上限 %.2f，关闭加热器\n", t_in, in_max);
-    overheat = true;
-  }
-  else if (t_in <= in_min) {
-    Serial.printf("[Heat] 内部温度 %.2f ≤ 下限 %.2f，开启加热器\n", t_in, in_min);
-    needHeat = true;
-  }
-
-  // 若未过热，则根据温差判断是否开启加热
-  if (!needHeat && !overheat) {
-    float diff = t_in - med_out;
-    float max_allowed_diff = pow((t_in - appConfig.tempMaxDiff) / 40.0f, 2);
-    if (diff >= max_allowed_diff) {
-      Serial.printf("[Heat] 温差 %.2f 超过阈值 %.2f，开启加热器\n", diff, max_allowed_diff);
+  // ---- min 优先逻辑 ----
+  if (!overheat) {
+    if (t_in <= in_min) {
+      // 低于最小值，强制加热
       needHeat = true;
+      msg = String("[Heat-nCurve] 内部温度 ") + String(t_in, 2) +
+        " ≤ " + String(in_min, 2) + "，强制加热";
     }
     else {
-      Serial.printf("[Heat] 温差 %.2f 未超过阈值 %.2f，关闭加热器\n", diff, max_allowed_diff);
+      // 归一化内部温度到 [0,1]
+      float u = 0.0f;
+      if (in_max > in_min) {
+        float t_ref = min(max(t_in, in_min), in_max);
+        u = (t_ref - in_min) / (in_max - in_min);
+      }
+
+      // 计算 n 次曲线的差值阈值
+      float DIFF_ON_MAX = diff_min + (diff_max - diff_min) * pow(u, n_curve);
+
+      if (diff_now > DIFF_ON_MAX) {
+        // 差值大于目标 → 外壁太冷 → 开加热
+        needHeat = true;
+        msg = String("[Heat-nCurve] 开始加热: diff=") + String(diff_now, 2) +
+          " > 阈值 " + String(DIFF_ON_MAX, 2) +
+          " (u=" + String(u, 2) + ", n=" + String(n_curve, 2) + ")";
+      }
+      else {
+        // 差值小于目标 → 外壁够热 → 停加热
+        needHeat = false;
+        msg = String("[Heat-nCurve] 停止加热: diff=") + String(diff_now, 2) +
+          " ≤ 阈值 " + String(DIFF_ON_MAX, 2) +
+          " (u=" + String(u, 2) + ", n=" + String(n_curve, 2) + ")";
+      }
     }
   }
+
 
   // 执行加热控制
   if (overheat) {
@@ -342,6 +362,8 @@ bool doMeasurementAndSave() {
 
 
   // ===== 泵水保护逻辑（仅在 heater 关闭时才生效）=====
+
+
 
   if (!heaterIsOn && pumpIsOn && (millis() - pumpStartMs >= appConfig.pumpMaxDuration)) {
     Serial.println("[Pump] 泵运行超时（非加热状态），自动关闭");
@@ -370,7 +392,7 @@ bool doMeasurementAndSave() {
   }
 
   // 系统状态字段
-  doc["info"]["diff_ok"] = diffOk;
+  doc["info"]["msg"] = msg;
   doc["info"]["heat"] = heaterIsOn;
   doc["info"]["pump"] = pumpIsOn;
   doc["info"]["aeration"] = aerationIsOn;
@@ -441,23 +463,48 @@ void setup() {
     ESP.restart();
   }
 
-  // 恢复测量定时
-  if (preferences.begin(NVS_NAMESPACE, false)) {
-    unsigned long lastSec = preferences.getULong(NVS_KEY_LAST_MEAS, 0);
-    preAerationMs = preferences.getULong(NVS_KEY_LAST_AERATION, 0);
+  // 恢复测量定时 & 曝气相位起点（ms基准）
+  if (preferences.begin(NVS_NAMESPACE, /*readOnly=*/true)) {
+    unsigned long lastSecMea = preferences.getULong(NVS_KEY_LAST_MEAS, 0);
+    unsigned long lastSecAera = preferences.getULong(NVS_KEY_LAST_AERATION, 0);
     time_t nowSec = time(nullptr);
-    unsigned long intervalSec = appConfig.postInterval / 1000UL;
-    unsigned long elapsedSec = (nowSec > lastSec) ? nowSec - lastSec : 0;
-    if (elapsedSec >= intervalSec) {
-      prevMeasureMs = millis() - appConfig.postInterval;
+
+    // ==== 恢复曝气相位起点（仅用时间戳，不管相位 on/off）====
+    if (nowSec > 0 && lastSecAera > 0) {
+      unsigned long long elapsedAeraMs64 =
+        (unsigned long long)(nowSec - lastSecAera) * 1000ULL;
+      // 映射到当前 millis() 基准（截断到 32 位）
+      preAerationMs = millis() - (unsigned long)elapsedAeraMs64;
     }
     else {
-      prevMeasureMs = millis() - (appConfig.postInterval - elapsedSec * 1000UL);
+      // 第一次运行或 NTP 未就绪：为了尽快进入第一轮，可认为关相位已过完
+      preAerationMs = millis() - appConfig.aerationInterval;
     }
+
+    // ==== 恢复测量起点 ====
+    if (nowSec > 0 && lastSecMea > 0) {
+      unsigned long intervalSec = appConfig.postInterval / 1000UL;
+      unsigned long elapsedSec = (nowSec > lastSecMea) ? (nowSec - lastSecMea) : 0UL;
+
+      if (elapsedSec >= intervalSec) {
+        // 立刻测
+        prevMeasureMs = millis() - appConfig.postInterval;
+      }
+      else {
+        // 再等剩余时间
+        prevMeasureMs = millis() - (appConfig.postInterval - elapsedSec * 1000UL);
+      }
+    }
+    else {
+      prevMeasureMs = millis() - appConfig.postInterval;
+    }
+
     preferences.end();
   }
   else {
+    // 读 NVS 失败时的保守初始化
     prevMeasureMs = millis() - appConfig.postInterval;
+    preAerationMs = millis() - appConfig.aerationInterval;
   }
 
 
