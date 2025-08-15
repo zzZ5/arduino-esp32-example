@@ -14,11 +14,11 @@
 
 // ========================= 持久化存储（NVS）键与测控相位 =========================
 Preferences preferences;
-static const char* NVS_NAMESPACE = "my-nvs";                 // NVS 命名空间
-static const char* NVS_KEY_LAST_MEAS = "lastMeas";           // 上次测量时间（秒）
-static const char* NVS_KEY_LAST_AERATION = "lastAer";        // 上次曝气时间（秒）
-static unsigned long prevMeasureMs = 0;                      // 周期测量的时间基准（ms）
-static unsigned long preAerationMs = 0;                      // 曝气相位参考时间（ms）
+static const char* NVS_NAMESPACE = "my-nvs";   // NVS 命名空间
+static const char* NVS_KEY_LAST_MEAS = "lastMeas"; // 上次测量时间（秒）
+static const char* NVS_KEY_LAST_AERATION = "lastAer";  // 上次曝气时间（秒）
+static unsigned long prevMeasureMs = 0;               // 周期测量的时间基准（ms）
+static unsigned long preAerationMs = 0;               // 曝气相位参考时间（ms）
 
 // ========================= 命令队列（非阻塞排程） =========================
 struct PendingCommand {
@@ -38,19 +38,19 @@ static const unsigned long HEATER_MIN_OFF_MS = 30000;  // 加热器最短关机 
 static unsigned long heaterToggleMs = 0;               // 最近一次加热器切换时刻（ms）
 
 // 泵：连续运行保护 & 冷却期（休息期）
-static const unsigned long PUMP_COOLDOWN_MS = 60000;   // 泵冷却期（60s，可按泵规格调整）
+static const unsigned long PUMP_COOLDOWN_MS = 60000;   // 泵冷却期（60s）
 static unsigned long pumpOnStartMs = 0;                // 最近一次“泵开启”的时间
 static unsigned long pumpCooldownUntilMs = 0;          // 泵冷却期截止时刻（ms），0 表示无冷却期
 
 // 手动软锁：在手动时段内，自动逻辑不抢夺控制
 static unsigned long aerationManualUntilMs = 0;        // 手动曝气软锁截止（ms）
-static unsigned long pumpManualUntilMs = 0;            // 手动泵软锁截止（ms）
-static unsigned long heaterManualUntilMs = 0;          // 手动加热软锁截止（ms）
+static unsigned long pumpManualUntilMs = 0;        // 手动泵软锁截止（ms）
+static unsigned long heaterManualUntilMs = 0;        // 手动加热软锁截止（ms）
 
 // ========================= 延迟补偿：前瞻预测 + 回差 =========================
 static const float PRED_LOOKAHEAD_MIN = 3.0f;  // 前瞻预测 3 分钟
-static const float DIFF_HYST = 0.5f;   // 回差（关断阈值比开机阈值低 0.5℃）
-static const float SLOPE_LIMIT = 1.5f;   // 外浴温度斜率限幅（℃/min）
+static const float DIFF_HYST = 0.5f;  // 回差（关断阈值比开机阈值低 0.5℃）
+static const float SLOPE_LIMIT = 1.5f;  // 外浴温度斜率限幅（℃/min）
 static float        lastMedOut = NAN;        // 上次外浴中位温
 static unsigned long lastMedOutMs = 0;         // 上次外浴中位温时间戳（ms）
 
@@ -60,8 +60,8 @@ static unsigned long pumpTailUntilMs = 0;              // 尾流截止时间（m
 
 // ========================= 水箱温度安全&参与控制 =========================
 static const float TANK_TEMP_MAX_C = 80.0f;        // 水箱温度上限 80℃
-static const float TANK_PUMP_DELTA_ON = 8.0f;         // ★ 水箱-外浴热差 ≥8℃ 时，允许“仅泵助热”
-static const float TANK_PUMP_DELTA_OFF = 4.0f;         // ★ 回差关泵阈值（防抖）
+static const float TANK_PUMP_DELTA_ON = 8.0f;         // ★ 水箱-外浴热差 ≥8.0℃：可仅泵助热
+static const float TANK_PUMP_DELTA_OFF = 4.0f;         // ★ 回差：<4.0℃ 停止仅泵助热
 static bool  gPumpAssistWanted = false;                // ★ 本周期是否需要“仅泵助热”
 
 // ========================= 全局状态 =========================
@@ -368,7 +368,7 @@ bool doMeasurementAndSave() {
   // 水箱温度有效性与上限
   bool  tankValid = !isnan(t_tank) && (t_tank > -10.0f) && (t_tank < 120.0f);
   bool  tankOver = tankValid && (t_tank >= TANK_TEMP_MAX_C);
-  float delta_tank_out = tankValid ? (t_tank - med_out) : 0.0f; // ★ 水箱-外浴热差
+  float delta_tank_out = tankValid ? (t_tank - med_out) : 0.0f; // 水箱-外浴热差
 
   String ts = getTimeString();
   time_t nowEpoch = time(nullptr);
@@ -464,11 +464,40 @@ bool doMeasurementAndSave() {
     bool heaterManualActive = (heaterManualUntilMs != 0 && (long)(nowMs - heaterManualUntilMs) < 0);
     if (heaterManualActive) {
       reason += " | 手动加热锁生效";
-      wantHeat = heaterIsOn;
+      wantHeat = heaterIsOn; // 手动期：自动逻辑不改变 heater 状态
     }
 
-    // 最小开/停机时间抑制（水箱过温时跳过抑制，保证立停）
-    if (!tankOver) {
+    // ★★★ 水箱足够热 → 不加热，只泵水（仅在非手动加热期、且原本需要补热时）★★★
+    // 回差：上一周期若已在“仅泵助热”，则使用更低的 OFF 阈值退出
+    static bool lastAssist = false; // 仅泵助热的回差状态
+    bool assistNow = false;
+    gPumpAssistWanted = false;      // 默认不助热
+
+    if (!heaterManualActive && !tankOver && wantHeat && tankValid) {
+      float onThr = TANK_PUMP_DELTA_ON;
+      float offThr = TANK_PUMP_DELTA_OFF;
+      if (!lastAssist) assistNow = (delta_tank_out >= onThr);
+      else             assistNow = (delta_tank_out >= offThr);
+
+      if (assistNow) {
+        // 覆盖为“停热，仅泵”模式，并且跳过最小开/停机抑制
+        wantHeat = false;
+        reason += String(" | tankΔ=") + String(delta_tank_out, 1) +
+          "℃≥" + String(onThr, 1) + "℃ → 仅泵助热";
+      }
+      gPumpAssistWanted = assistNow;
+      lastAssist = assistNow;
+    }
+    else {
+      // 不满足条件则根据回差退出仅泵（若上周期为真，这里置 false）
+      gPumpAssistWanted = false;
+      static bool initOnce = false; // 防止编译器告警
+      (void)initOnce;
+    }
+
+    // 最小开/停机时间抑制（水箱过温或仅泵助热时跳过抑制，保证策略立即生效）
+    bool skipMinTime = tankOver || gPumpAssistWanted;
+    if (!skipMinTime) {
       if (wantHeat && !heaterIsOn && (nowMs - heaterToggleMs) < HEATER_MIN_OFF_MS) {
         wantHeat = false;
         reason += " | 抑制：未到最小关断间隔";
@@ -479,19 +508,6 @@ bool doMeasurementAndSave() {
       }
     }
   }
-
-  // ★★★ 计算“仅泵助热”意愿（tank 参与控制）★★★
-  // 条件：非外浴硬切 + 系统判断需要补热（wantHeat）+ 水箱有效 + 水箱明显更热（带回差）
-  static bool lastAssist = false; // 用于回差
-  bool assistNow = false;
-  if (!hardCool && wantHeat && tankValid) {
-    float onThr = TANK_PUMP_DELTA_ON;
-    float offThr = TANK_PUMP_DELTA_OFF;
-    if (!lastAssist) assistNow = (delta_tank_out >= onThr);
-    else             assistNow = (delta_tank_out >= offThr);
-  }
-  gPumpAssistWanted = assistNow;
-  lastAssist = assistNow;
 
   // ---- 执行动作（泵的保护/尾流/助热由 pumpProtectionTick 统一收口）----
   unsigned long nowMs2 = millis();
@@ -550,7 +566,7 @@ bool doMeasurementAndSave() {
   doc["info"]["tank_temp"] = tankValid ? t_tank : NAN;
   doc["info"]["tank_over"] = tankOver;
   doc["info"]["tank_out_delta"] = tankValid ? delta_tank_out : NAN;
-  doc["info"]["pump_assist"] = gPumpAssistWanted; // ★ 是否处于“仅泵助热”意愿
+  doc["info"]["pump_assist"] = gPumpAssistWanted; // 是否处于“仅泵助热”
 
   doc["info"]["msg"] = (hardCool ?
     msg :
@@ -703,7 +719,7 @@ void setup() {
 // ========================= 主循环 =========================
 void loop() {
   maintainMQTT(5000);
-  // 可选：若想更及时地处理尾流/冷却期/助热，可在此处也调用一次保护逻辑（轻量）
+  // 如需更“实时”地处理尾流/冷却/助热，可在此额外调用：
   // pumpProtectionTick();
   delay(100);
 }
