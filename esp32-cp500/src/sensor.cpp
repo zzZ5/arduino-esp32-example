@@ -6,6 +6,7 @@
 
 static OneWire* oneWireIn = nullptr;
 static DallasTemperature* sensorIn = nullptr;
+static int numInSensors = 0;                 // 内部总线数量
 
 static OneWire* oneWireOut = nullptr;
 static DallasTemperature* sensorOut = nullptr;
@@ -25,6 +26,10 @@ bool initSensors(int tempInPin, int tempOutPin, int heaterPin, int pumpPin, int 
 	oneWireIn = new OneWire(tempInPin);
 	sensorIn = new DallasTemperature(oneWireIn);
 	sensorIn->begin();
+
+	sensorIn->requestTemperatures();
+	numInSensors = sensorIn->getDeviceCount();
+	Serial.printf("[TempIn] Found %d sensors\n", numInSensors);
 
 	// 外部温度（GPIO5）
 	oneWireOut = new OneWire(tempOutPin);
@@ -54,12 +59,28 @@ bool initSensors(int tempInPin, int tempOutPin, int heaterPin, int pumpPin, int 
 
 // ========== 温度读取 ==========
 
-float readTempIn() {
+// 按索引读内部总线（GPIO4）多个探头
+float readTempInByIndex(int index) {
 	if (!sensorIn) return NAN;
-	sensorIn->requestTemperatures();
-	float t = sensorIn->getTempCByIndex(0);
-	Serial.printf("[TempIn] %.1f °C\n", t);
+	if (index < 0 || index >= numInSensors) return NAN;
+
+	sensorIn->requestTemperatures();            // 触发转换
+	float t = sensorIn->getTempCByIndex(index); // 按索引取值
+	Serial.printf("[TempInBus idx=%d] %.1f °C\n", index, t);
 	return t;
+}
+
+
+float readTempIn() {
+	return readTempInByIndex(0);
+}
+
+float readTempTank() {
+	if (numInSensors < 2) {
+		Serial.println("[Tank] Not found (need 2nd sensor on GPIO4).");
+		return NAN;
+	}
+	return readTempInByIndex(1);
 }
 
 std::vector<float> readTempOut() {

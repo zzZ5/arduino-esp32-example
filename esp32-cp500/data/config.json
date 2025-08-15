@@ -30,7 +30,7 @@
     "202.120.2.101"
   ],
   "temp_maxdif": 10,
-  "temp_limitout_max": 55,
+  "temp_limitout_max": 60,
   "temp_limitin_max": 70,
   "temp_limitout_min": 25,
   "temp_limitin_min": 25,
@@ -40,5 +40,5 @@
     "interval": 300000,
     "duration": 300000
   },
-  "pump_max_duration": 120000
+  "pump_max_duration": 600000
 }
