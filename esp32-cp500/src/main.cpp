@@ -60,7 +60,7 @@ static unsigned long pumpTailUntilMs = 0;              // 尾流截止时间（m
 
 // ========================= 水箱温度安全&参与控制 =========================
 static const float TANK_TEMP_MAX_C = 80.0f;        // 水箱温度上限 80℃
-static const float TANK_PUMP_DELTA_ON = 8.0f;         // ★ 水箱-外浴热差 ≥8.0℃：可仅泵助热
+static const float TANK_PUMP_DELTA_ON = 6.0f;         // ★ 水箱-外浴热差 ≥6.0℃：可仅泵助热
 static const float TANK_PUMP_DELTA_OFF = 4.0f;         // ★ 回差：<4.0℃ 停止仅泵助热
 static bool  gPumpAssistWanted = false;                // ★ 本周期是否需要“仅泵助热”
 
@@ -237,26 +237,12 @@ void executeCommand(const PendingCommand& pcmd) {
   else if (pcmd.cmd == "heater") {
     if (pcmd.action == "on") {
       heaterOn(); heaterIsOn = true; heaterToggleMs = millis();
-      pumpTailUntilMs = 0; // 开热时清理尾流窗口
       if (pcmd.duration > 0) heaterManualUntilMs = millis() + pcmd.duration;
-      unsigned long nowMs = millis();
-      bool allowAutoPump = !(pumpManualUntilMs != 0 && (long)(nowMs - pumpManualUntilMs) < 0);
-      if (allowAutoPump && nowMs >= pumpCooldownUntilMs && !pumpIsOn) {
-        pumpOn(); pumpIsOn = true; pumpOnStartMs = nowMs;
-      }
       scheduleOff("heater", pcmd.duration);
     }
     else {
       heaterOff(); heaterIsOn = false; heaterToggleMs = millis();
       heaterManualUntilMs = 0;
-      // 开启尾流窗口（由 pumpProtectionTick 统一处理）
-      pumpTailUntilMs = millis() + PUMP_TAIL_MS;
-      unsigned long nowMs = millis();
-      bool allowAutoPump = !(pumpManualUntilMs != 0 && (long)(nowMs - pumpManualUntilMs) < 0);
-      if (allowAutoPump && nowMs >= pumpCooldownUntilMs && !pumpIsOn) {
-        pumpOn(); pumpIsOn = true; pumpOnStartMs = nowMs;
-        Serial.println("[PumpTail] 加热关闭，进入尾流阶段：泵已开启");
-      }
     }
   }
   else if (pcmd.cmd == "pump") {
@@ -305,6 +291,7 @@ void checkAndControlAerationByTimer() {
     }
   }
 }
+
 
 // ========================= 泵连续运行保护（每轮测控都检查） =========================
 void pumpProtectionTick() {
@@ -368,7 +355,7 @@ bool doMeasurementAndSave() {
   // 水箱温度有效性与上限
   bool  tankValid = !isnan(t_tank) && (t_tank > -10.0f) && (t_tank < 120.0f);
   bool  tankOver = tankValid && (t_tank >= TANK_TEMP_MAX_C);
-  float delta_tank_out = tankValid ? (t_tank - med_out) : 0.0f; // 水箱-外浴热差
+  float delta_tank_in = tankValid ? (t_tank - t_in) : 0.0f; // 水箱-内温热差
 
   String ts = getTimeString();
   time_t nowEpoch = time(nullptr);
@@ -476,15 +463,14 @@ bool doMeasurementAndSave() {
     if (!heaterManualActive && !tankOver && wantHeat && tankValid) {
       float onThr = TANK_PUMP_DELTA_ON;
       float offThr = TANK_PUMP_DELTA_OFF;
-      if (!lastAssist) assistNow = (delta_tank_out >= onThr);
-      else             assistNow = (delta_tank_out >= offThr);
-
-      if (assistNow) {
+      if (delta_tank_in >= onThr && delta_tank_in >= offThr) {
         // 覆盖为“停热，仅泵”模式，并且跳过最小开/停机抑制
         wantHeat = false;
-        reason += String(" | tankΔ=") + String(delta_tank_out, 1) +
+        assistNow = true;
+        reason += String(" | tankΔ=") + String(delta_tank_in, 1) +
           "℃≥" + String(onThr, 1) + "℃ → 仅泵助热";
       }
+
       gPumpAssistWanted = assistNow;
       lastAssist = assistNow;
     }
@@ -565,7 +551,7 @@ bool doMeasurementAndSave() {
   // 水箱温度不上报 key；放入 info 字段
   doc["info"]["tank_temp"] = tankValid ? t_tank : NAN;
   doc["info"]["tank_over"] = tankOver;
-  doc["info"]["tank_out_delta"] = tankValid ? delta_tank_out : NAN;
+  doc["info"]["tank_in_delta"] = tankValid ? delta_tank_in : NAN;
   doc["info"]["pump_assist"] = gPumpAssistWanted; // 是否处于“仅泵助热”
 
   doc["info"]["msg"] = (hardCool ?

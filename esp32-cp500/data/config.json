@@ -8,16 +8,16 @@
     "port": 1883,
     "user": "equipment",
     "pass": "ZNXK8888",
-    "clientId": "cp500_002",
-    "post_topic": "compostlab/briRKLHqoX/post/data",
-    "response_topic": "compostlab/briRKLHqoX/response"
+    "clientId": "cp500_001",
+    "post_topic": "compostlab/77EtsEJT2O/post/data",
+    "response_topic": "compostlab/77EtsEJT2O/response"
   },
   "keys": {
-    "temp_in": "rnitTnF3pYLcXS7",
+    "temp_in": "R5RnyTQQ5fJUqiD",
     "temp_out": [
-      "mS0Jyx6Idmc8FUc",
-      "KQP6yEErMV1VeEA",
-      "GqVpsbvnyrxbaAg"
+      "Svmg6olOs0hCUPt",
+      "yQYXY2NhRApljr6",
+      "lyU0qKbusay9jh6"
     ]
   },
   "post_interval": 60000,
@@ -29,12 +29,12 @@
     "ntp.sjtu.edu.cn",
     "202.120.2.101"
   ],
-  "temp_maxdif": 10,
+  "temp_maxdif": 5,
   "temp_limitout_max": 60,
   "temp_limitin_max": 70,
   "temp_limitout_min": 25,
   "temp_limitin_min": 25,
-  "equipment_key": "briRKLHqoX",
+  "equipment_key": "77EtsEJT2O",
   "aeration_timer": {
     "enabled": true,
     "interval": 300000,
