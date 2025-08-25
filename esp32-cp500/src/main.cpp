@@ -1,3 +1,56 @@
+/*
+ * Project: Bath Heater/Pump Controller (ESP32)
+ * File   : main.cpp
+ *
+ * 功能概要
+ * - 通过多探头获取外浴温度（中位去噪）、内核温度和水箱温度
+ * - 使用 n-curve + 前瞻斜率 + 回差，判定是否需要“补热”（bathWantHeat）
+ * - 互斥控制：加热器与水泵绝不同时运行
+ * - “needHeat”用于给水箱预热，保证 delta_tank_in ≥ TANK_PUMP_DELTA_ON，随时可“仅泵助热”
+ * - “仅泵助热”条件：水箱足够热（带回差）；此时停止加热，只开泵
+ * - 支持 MQTT 命令队列与定时执行；支持定时曝气
+ * - 关键事件/状态上报到 MQTT
+ *
+ * 依赖/环境
+ * - 硬件：ESP32
+ * - Arduino Core for ESP32 2.x
+ * - 库：ArduinoJson、Preferences、FreeRTOS（随 ESP32 Core）、以及你的本地模块：
+ *       config_manager.h / wifi_ntp_mqtt.h / sensor.h / log_manager.h
+ *
+ * 引脚/传感器
+ * - 见 initSensors(4, 5, 25, 26, 27)（你自定义的初始化函数）
+ *
+ * 编译/上传（Arduino IDE）
+ * - 开发板：ESP32 Dev Module（或你的具体型号）
+ * - 串口波特率：115200
+ *
+ * MQTT 上线信息（boot message）
+ * {
+ *   "device": "<equipmentKey>",
+ *   "status": "online",
+ *   "timestamp": "<YYYY-MM-DD HH:MM:SS>",
+ *   "last_measure_time": "<YYYY-MM-DD HH:MM:SS|unknown>"
+ * }
+ *
+ * 数据上报（每轮测控后 post_topic）
+ * {
+ *   "data":[
+ *     {"key":"<keyTempIn>","value":<t_in>,"measured_time":"<ts>"},
+ *     {"key":"<keyTempOut[i]>","value":<t_out[i]>,"measured_time":"<ts>"},
+ *     ...
+ *   ],
+ *   "info":{
+ *     "tank_temp": <number|null>,
+ *     "tank_over": <bool>,
+ *     "tank_in_delta": <number|null>,
+ *     "msg": "<简要决策信息>",
+ *     "heat": <bool>,          // 加热器当前状态
+ *     "pump": <bool>,          // 水泵当前状态
+ *     "aeration": <bool>       // 曝气当前状态
+ *   }
+ * }
+ */
+
 #include <Arduino.h>
 #include <Preferences.h>
 #include <time.h>
@@ -12,13 +65,13 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/semphr.h"
 
-// ========================= 持久化存储（NVS）键与测控相位 =========================
+ // ========================= 持久化存储（NVS）键与测控相位 =========================
 Preferences preferences;
-static const char* NVS_NAMESPACE = "my-nvs";   // NVS 命名空间
-static const char* NVS_KEY_LAST_MEAS = "lastMeas"; // 上次测量时间（秒）
+static const char* NVS_NAMESPACE = "my-nvs";
+static const char* NVS_KEY_LAST_MEAS = "lastMeas";     // 上次测量时间（秒）
 static const char* NVS_KEY_LAST_AERATION = "lastAer";  // 上次曝气时间（秒）
-static unsigned long prevMeasureMs = 0;               // 周期测量的时间基准（ms）
-static unsigned long preAerationMs = 0;               // 曝气相位参考时间（ms）
+static unsigned long prevMeasureMs = 0;                // 周期测量基准（ms）
+static unsigned long preAerationMs = 0;                // 曝气相位时间基准（ms）
 
 // ========================= 命令队列（非阻塞排程） =========================
 struct PendingCommand {
@@ -32,41 +85,32 @@ std::vector<PendingCommand> pendingCommands;
 // ===== 命令队列互斥量句柄 =====
 SemaphoreHandle_t gCmdMutex = nullptr;
 
-// ========================= 防抖/软锁/泵保护 =========================
+// ========================= 防抖/软锁 =========================
+// （最小开/停机抑制：如用机械继电器，建议保留≥3~5s；用 SSR 可设为 0）
 static const unsigned long HEATER_MIN_ON_MS = 30000;  // 加热器最短开机 30s
 static const unsigned long HEATER_MIN_OFF_MS = 30000;  // 加热器最短关机 30s
 static unsigned long heaterToggleMs = 0;               // 最近一次加热器切换时刻（ms）
 
-// 泵：连续运行保护 & 冷却期（休息期）
-static const unsigned long PUMP_COOLDOWN_MS = 60000;   // 泵冷却期（60s）
-static unsigned long pumpOnStartMs = 0;                // 最近一次“泵开启”的时间
-static unsigned long pumpCooldownUntilMs = 0;          // 泵冷却期截止时刻（ms），0 表示无冷却期
-
 // 手动软锁：在手动时段内，自动逻辑不抢夺控制
 static unsigned long aerationManualUntilMs = 0;        // 手动曝气软锁截止（ms）
-static unsigned long pumpManualUntilMs = 0;        // 手动泵软锁截止（ms）
-static unsigned long heaterManualUntilMs = 0;        // 手动加热软锁截止（ms）
+static unsigned long pumpManualUntilMs = 0;            // 手动泵软锁截止（ms）
+static unsigned long heaterManualUntilMs = 0;          // 手动加热软锁截止（ms）
 
 // ========================= 延迟补偿：前瞻预测 + 回差 =========================
 static const float PRED_LOOKAHEAD_MIN = 3.0f;  // 前瞻预测 3 分钟
 static const float DIFF_HYST = 0.5f;  // 回差（关断阈值比开机阈值低 0.5℃）
 static const float SLOPE_LIMIT = 1.5f;  // 外浴温度斜率限幅（℃/min）
-static float        lastMedOut = NAN;        // 上次外浴中位温
+static float        lastMedOut = NAN;         // 上次外浴中位温
 static unsigned long lastMedOutMs = 0;         // 上次外浴中位温时间戳（ms）
 
-// ========================= 关热后尾流（确保水浴连续性） =========================
-static const unsigned long PUMP_TAIL_MS = 60000;       // 关热后泵延时继续运行时长（ms）
-static unsigned long pumpTailUntilMs = 0;              // 尾流截止时间（ms），0 表示无尾流窗口
-
 // ========================= 水箱温度安全&参与控制 =========================
-static const float TANK_TEMP_MAX_C = 80.0f;        // 水箱温度上限 80℃
-static const float TANK_PUMP_DELTA_ON = 6.0f;         // ★ 水箱-外浴热差 ≥6.0℃：可仅泵助热
-static const float TANK_PUMP_DELTA_OFF = 4.0f;         // ★ 回差：<4.0℃ 停止仅泵助热
-static bool  gPumpAssistWanted = false;                // ★ 本周期是否需要“仅泵助热”
+static const float TANK_TEMP_MAX_C = 80.0f; // 水箱温度上限 80℃
+static const float TANK_PUMP_DELTA_ON = 6.0f;  // 水箱-内温热差 ≥6.0℃ 可仅泵助热
+static const float TANK_PUMP_DELTA_OFF = 4.0f;  // 回差：<4.0℃ 退出仅泵助热
 
 // ========================= 全局状态 =========================
 bool heaterIsOn = false;  // 加热器状态
-bool pumpIsOn = false;  // 热水循环泵（把热水箱热水打入水浴）
+bool pumpIsOn = false;  // 循环泵状态
 bool aerationIsOn = false;  // 曝气状态
 
 // ========================= 工具：鲁棒中位数（含离群剔除） =========================
@@ -78,9 +122,11 @@ float median(std::vector<float> values,
     return isnan(v) || v < minValid || v > maxValid;
     }), values.end());
   if (values.empty()) return NAN;
+
   std::sort(values.begin(), values.end());
   size_t mid = values.size() / 2;
   float med0 = (values.size() % 2 == 0) ? (values[mid - 1] + values[mid]) / 2.0f : values[mid];
+
   if (outlierThreshold > 0) {
     values.erase(std::remove_if(values.begin(), values.end(), [&](float v) {
       return fabsf(v - med0) > outlierThreshold;
@@ -116,11 +162,13 @@ bool updateAppConfigFromJson(JsonObject obj) {
   }
   if (obj.containsKey("post_interval")) appConfig.postInterval = obj["post_interval"].as<uint32_t>();
   if (obj.containsKey("temp_maxdif"))   appConfig.tempMaxDiff = obj["temp_maxdif"].as<uint32_t>();
-  // 仅外浴上限硬保护；in_max 只用于归一化
+
+  // 仅外浴上限硬保护；in_max 只用于归一化（注意 out_min/in_min 未在本文件使用）
   if (obj.containsKey("temp_limitout_max")) appConfig.tempLimitOutMax = obj["temp_limitout_max"].as<uint32_t>();
   if (obj.containsKey("temp_limitout_min")) appConfig.tempLimitOutMin = obj["temp_limitout_min"].as<uint32_t>();
   if (obj.containsKey("temp_limitin_max"))  appConfig.tempLimitInMax = obj["temp_limitin_max"].as<uint32_t>();
   if (obj.containsKey("temp_limitin_min"))  appConfig.tempLimitInMin = obj["temp_limitin_min"].as<uint32_t>();
+
   if (obj.containsKey("equipment_key")) appConfig.equipmentKey = obj["equipment_key"].as<String>();
   if (obj.containsKey("keys")) {
     JsonObject keys = obj["keys"];
@@ -136,8 +184,6 @@ bool updateAppConfigFromJson(JsonObject obj) {
     if (aer.containsKey("interval")) appConfig.aerationInterval = aer["interval"].as<uint32_t>();
     if (aer.containsKey("duration")) appConfig.aerationDuration = aer["duration"].as<uint32_t>();
   }
-  // 9. 泵连续运行上限（毫秒，用于寿命保护）
-  if (obj.containsKey("pump_max_duration")) appConfig.pumpMaxDuration = obj["pump_max_duration"].as<uint32_t>();
   return true;
 }
 
@@ -236,6 +282,9 @@ void executeCommand(const PendingCommand& pcmd) {
   }
   else if (pcmd.cmd == "heater") {
     if (pcmd.action == "on") {
+      // 互斥：开热前先关泵
+      if (pumpIsOn) { pumpOff(); pumpIsOn = false; }
+      pumpManualUntilMs = 0;          // 清除泵软锁，避免和自动互斥冲突
       heaterOn(); heaterIsOn = true; heaterToggleMs = millis();
       if (pcmd.duration > 0) heaterManualUntilMs = millis() + pcmd.duration;
       scheduleOff("heater", pcmd.duration);
@@ -247,7 +296,10 @@ void executeCommand(const PendingCommand& pcmd) {
   }
   else if (pcmd.cmd == "pump") {
     if (pcmd.action == "on") {
-      pumpOn(); pumpIsOn = true; pumpOnStartMs = millis();
+      // 互斥：开泵前先关加热
+      if (heaterIsOn) { heaterOff(); heaterIsOn = false; heaterToggleMs = millis(); }
+      heaterManualUntilMs = 0;         // 清除加热软锁
+      pumpOn(); pumpIsOn = true;
       if (pcmd.duration > 0) pumpManualUntilMs = millis() + pcmd.duration;
       scheduleOff("pump", pcmd.duration);
     }
@@ -292,54 +344,13 @@ void checkAndControlAerationByTimer() {
   }
 }
 
-
-// ========================= 泵连续运行保护（每轮测控都检查） =========================
-void pumpProtectionTick() {
-  unsigned long nowMs = millis();
-
-  // (a) 连续运行超时 → 进入冷却期
-  if (pumpIsOn && appConfig.pumpMaxDuration > 0 &&
-    (nowMs - pumpOnStartMs >= appConfig.pumpMaxDuration)) {
-    pumpOff(); pumpIsOn = false;
-    pumpCooldownUntilMs = nowMs + PUMP_COOLDOWN_MS;
-    pumpManualUntilMs = 0;
-    Serial.printf("[PumpProtect] 连续运行超时（≥ %lu ms），进入冷却期 %lu ms\n",
-      (unsigned long)appConfig.pumpMaxDuration, (unsigned long)PUMP_COOLDOWN_MS);
-  }
-
-  // (b) 冷却后、若需要加热 → 自动恢复泵
-  bool allowAutoPump = !(pumpManualUntilMs != 0 && (long)(nowMs - pumpManualUntilMs) < 0);
-  if (heaterIsOn && allowAutoPump && !pumpIsOn && nowMs >= pumpCooldownUntilMs) {
-    pumpOn(); pumpIsOn = true; pumpOnStartMs = nowMs;
-    Serial.println("[PumpProtect] 冷却期结束且需要加热，自动恢复泵");
-  }
-
-  // (c) 加热关闭时的尾流/水箱助热控制（与冷却期&软锁并行约束）
-  if (!heaterIsOn && allowAutoPump) {
-    bool inTail = (pumpTailUntilMs != 0 && (long)(nowMs - pumpTailUntilMs) < 0);
-    if ((inTail || gPumpAssistWanted)) {
-      if (!pumpIsOn && nowMs >= pumpCooldownUntilMs) {
-        pumpOn(); pumpIsOn = true; pumpOnStartMs = nowMs;
-        Serial.println("[PumpAssist] 尾流或水箱热差驱动：自动开启泵");
-      }
-    }
-    else {
-      if (pumpIsOn) {
-        pumpOff(); pumpIsOn = false;
-        Serial.println("[PumpAssist] 不在尾流且无水箱热差驱动：自动关闭泵");
-      }
-      if (!inTail) pumpTailUntilMs = 0; // 清理尾流窗口
-    }
-  }
-}
-
 // ========================= 主测量 + 控制 + 上报 =========================
 bool doMeasurementAndSave() {
   Serial.println("[Measure] 采集温度");
 
-  float t_in = readTempIn();                 // 核心温度（内部）
-  std::vector<float> t_outs = readTempOut();   // 外浴多个探头
-  float t_tank = readTempTank();               // 水箱温度（用于控制与上报info）
+  float t_in = readTempIn();     // 核心温度（内部）
+  std::vector<float> t_outs = readTempOut(); // 外浴多个探头
+  float t_tank = readTempTank();   // 水箱温度（用于控制与上报 info）
 
   if (t_outs.empty()) {
     Serial.println("[Measure] 外部温度读数为空，跳过本轮控制");
@@ -362,14 +373,14 @@ bool doMeasurementAndSave() {
 
   // 配置快捷变量
   const float out_max = (float)appConfig.tempLimitOutMax;
-  const float out_min = (float)appConfig.tempLimitOutMin;
-  const float in_max = (float)appConfig.tempLimitInMax;  // 仅用于归一化，不做硬切断
+  const float out_min = (float)appConfig.tempLimitOutMin;   // 未在本文件中直接使用
+  const float in_max = (float)appConfig.tempLimitInMax;    // 仅用于归一化，不做硬切断
   const float in_min = (float)appConfig.tempLimitInMin;
 
   float diff_now = t_in - med_out;
 
   // ---- 外浴硬保护 ----
-  bool hardCool = false;
+  bool   hardCool = false;
   String msg;
   if (med_out >= out_max) {
     hardCool = true;
@@ -378,11 +389,14 @@ bool doMeasurementAndSave() {
   }
 
   // ---- n-curve + 前瞻 + 回差（不触发外浴硬切时）----
-  bool wantHeat = false; // 是否希望开启加热
+  bool bathWantHeat = false; // 是否希望补热（原有算法核心判据，保持不改）
+  bool needHeat = false; // 为保证“随时可泵助热”而主动给水箱补热
+  bool needPump = false; // 满足仅泵助热条件时启动水泵（互斥：此时不加热）
+
   String reason;
   if (!hardCool) {
     if (t_in <= in_min) {
-      wantHeat = true;
+      bathWantHeat = true;
       reason = String("t_in ") + String(t_in, 2) + " ≤ " + String(in_min, 2) + " → 补热";
     }
     else {
@@ -412,13 +426,13 @@ bool doMeasurementAndSave() {
 
       if (!heaterIsOn) {
         if (diff_pred > DIFF_ON_MAX) {
-          wantHeat = true;
+          bathWantHeat = true;
           reason = String("pred_diff=") + String(diff_pred, 2) +
             " > on_thr " + String(DIFF_ON_MAX, 2) +
             " | slope=" + String(slope_cpm, 2);
         }
         else {
-          wantHeat = false;
+          bathWantHeat = false;
           reason = String("pred_diff=") + String(diff_pred, 2) +
             " ≤ on_thr " + String(DIFF_ON_MAX, 2) +
             " | slope=" + String(slope_cpm, 2);
@@ -426,13 +440,13 @@ bool doMeasurementAndSave() {
       }
       else {
         if (diff_pred <= DIFF_OFF_MAX) {
-          wantHeat = false;
+          bathWantHeat = false;
           reason = String("pred_diff=") + String(diff_pred, 2) +
             " ≤ off_thr " + String(DIFF_OFF_MAX, 2) +
             " | slope=" + String(slope_cpm, 2);
         }
         else {
-          wantHeat = true;
+          bathWantHeat = true;
           reason = String("pred_diff=") + String(diff_pred, 2) +
             " > off_thr " + String(DIFF_OFF_MAX, 2) +
             " | slope=" + String(slope_cpm, 2);
@@ -440,94 +454,96 @@ bool doMeasurementAndSave() {
       }
     }
 
-    // 水箱上限优先：强制停热（不受最小开机时间抑制）
-    if (tankOver) {
-      wantHeat = false;
-      reason += " | Tank≥80℃：强制停热";
-    }
-
-    // 尊重手动加热软锁
+    // 手动加热软锁：自动逻辑不改变 heater 状态
     unsigned long nowMs = millis();
     bool heaterManualActive = (heaterManualUntilMs != 0 && (long)(nowMs - heaterManualUntilMs) < 0);
     if (heaterManualActive) {
+      bathWantHeat = heaterIsOn;
       reason += " | 手动加热锁生效";
-      wantHeat = heaterIsOn; // 手动期：自动逻辑不改变 heater 状态
+    }
+    // 手动泵软锁：强制仅泵
+    bool pumpManualActive = (pumpManualUntilMs != 0 && (long)(nowMs - pumpManualUntilMs) < 0);
+    if (pumpManualActive) {
+      bathWantHeat = false;
+      needHeat = false;
+      needPump = true;
+      reason += " | 手动泵锁生效";
     }
 
-    // ★★★ 水箱足够热 → 不加热，只泵水（仅在非手动加热期、且原本需要补热时）★★★
-    // 回差：上一周期若已在“仅泵助热”，则使用更低的 OFF 阈值退出
-    static bool lastAssist = false; // 仅泵助热的回差状态
-    bool assistNow = false;
-    gPumpAssistWanted = false;      // 默认不助热
+    // 水箱上限：强制停热
+    if (tankValid && t_tank >= TANK_TEMP_MAX_C) {
+      bathWantHeat = false;
+      reason += " | Tank≥80℃：强制停热";
+    }
 
-    if (!heaterManualActive && !tankOver && wantHeat && tankValid) {
-      float onThr = TANK_PUMP_DELTA_ON;
-      float offThr = TANK_PUMP_DELTA_OFF;
-      if (delta_tank_in >= onThr && delta_tank_in >= offThr) {
-        // 覆盖为“停热，仅泵”模式，并且跳过最小开/停机抑制
-        wantHeat = false;
-        assistNow = true;
+    // 若当前不泵或尚未满足仅泵阈值，则优先把水箱加热到 Δ≥ON（保证随时可泵助热）
+    if (tankValid && !heaterManualActive && (t_tank < TANK_TEMP_MAX_C) &&
+      (delta_tank_in < TANK_PUMP_DELTA_ON)) {
+      needHeat = true; // “needHeat”=优先给水箱加热（非仅泵时）
+    }
+
+    // 若需要补热，且水箱足够热（带回差），则进入“仅泵助热”，并与加热器互斥
+    static bool lastAssist = false; // 仅泵助热回差记忆
+    if (!heaterManualActive && !pumpManualActive && !tankOver && bathWantHeat && tankValid) {
+      bool canAssistOn = (delta_tank_in >= TANK_PUMP_DELTA_ON);
+      bool keepAssist = (lastAssist && delta_tank_in >= TANK_PUMP_DELTA_OFF);
+      if ((canAssistOn || keepAssist) && !needHeat) {
+        needPump = true;
+        bathWantHeat = false; // 仅泵与加热互斥
+        lastAssist = true;
         reason += String(" | tankΔ=") + String(delta_tank_in, 1) +
-          "℃≥" + String(onThr, 1) + "℃ → 仅泵助热";
+          "℃≥" + String(TANK_PUMP_DELTA_ON, 1) + "℃ → 仅泵助热";
       }
-
-      gPumpAssistWanted = assistNow;
-      lastAssist = assistNow;
+      else {
+        needPump = false;
+        lastAssist = false;
+      }
     }
     else {
-      // 不满足条件则根据回差退出仅泵（若上周期为真，这里置 false）
-      gPumpAssistWanted = false;
-      static bool initOnce = false; // 防止编译器告警
-      (void)initOnce;
+      needPump = false;
+      lastAssist = false;
     }
 
-    // 最小开/停机时间抑制（水箱过温或仅泵助热时跳过抑制，保证策略立即生效）
-    bool skipMinTime = tankOver || gPumpAssistWanted;
+    // 最小开/停机时间抑制（水箱过温或仅泵助热时跳过抑制）
+    bool skipMinTime = tankOver || needPump;
     if (!skipMinTime) {
-      if (wantHeat && !heaterIsOn && (nowMs - heaterToggleMs) < HEATER_MIN_OFF_MS) {
-        wantHeat = false;
-        reason += " | 抑制：未到最小关断间隔";
+      if (bathWantHeat && !heaterIsOn && (nowMs - heaterToggleMs) < HEATER_MIN_OFF_MS) {
+        needHeat = false;  // 抑制新开热
+        reason += " | 抑制(needHeat)：未到最小关断间隔";
       }
-      if (!wantHeat && heaterIsOn && (nowMs - heaterToggleMs) < HEATER_MIN_ON_MS) {
-        wantHeat = true;
-        reason += " | 抑制：未到最小开机间隔";
+      if (!bathWantHeat && heaterIsOn && (nowMs - heaterToggleMs) < HEATER_MIN_ON_MS) {
+        bathWantHeat = true;  // 维持已开热
+        reason += " | 维持(needHeat)：未到最小开机间隔";
       }
     }
-  }
+  } // end !hardCool
 
-  // ---- 执行动作（泵的保护/尾流/助热由 pumpProtectionTick 统一收口）----
+  // ---- 执行动作（互斥：泵与加热绝不同时运行）----
   unsigned long nowMs2 = millis();
   if (hardCool) {
     if (heaterIsOn) { heaterOff(); heaterIsOn = false; heaterToggleMs = nowMs2; }
     if (pumpIsOn) { pumpOff();   pumpIsOn = false; }
-    pumpManualUntilMs = 0;
-    pumpCooldownUntilMs = 0;
-    pumpTailUntilMs = 0; // 硬保护触发：尾流无条件取消
-    gPumpAssistWanted = false;
+    pumpManualUntilMs = 0; // 清软锁
   }
   else {
-    if (wantHeat && !heaterIsOn) {
-      heaterOn(); heaterIsOn = true; heaterToggleMs = nowMs2;
-      pumpTailUntilMs = 0; // 开热时清尾流
-      bool allowAutoPump = !(pumpManualUntilMs != 0 && (long)(nowMs2 - pumpManualUntilMs) < 0);
-      if (allowAutoPump && nowMs2 >= pumpCooldownUntilMs && !pumpIsOn) {
-        pumpOn(); pumpIsOn = true; pumpOnStartMs = nowMs2;
-      }
+    if (needPump) {
+      // 仅泵：确保加热关闭
+      if (heaterIsOn) { heaterOff(); heaterIsOn = false; heaterToggleMs = nowMs2; }
+      if (!pumpIsOn) { pumpOn();   pumpIsOn = true; }
     }
-    else if (!wantHeat && heaterIsOn) {
-      heaterOff(); heaterIsOn = false; heaterToggleMs = nowMs2;
-      pumpTailUntilMs = nowMs2 + PUMP_TAIL_MS; // 停热→尾流
-      bool allowAutoPump = !(pumpManualUntilMs != 0 && (long)(nowMs2 - pumpManualUntilMs) < 0);
-      if (allowAutoPump && nowMs2 >= pumpCooldownUntilMs && !pumpIsOn) {
-        pumpOn(); pumpIsOn = true; pumpOnStartMs = nowMs2;
-        Serial.println("[PumpTail] 加热关闭，进入尾流阶段：泵已开启");
-      }
+    else if (needHeat || bathWantHeat) {
+      // 只加热：确保泵关闭
+      if (pumpIsOn) { pumpOff(); pumpIsOn = false; }
+      if (!heaterIsOn) { heaterOn(); heaterIsOn = true; heaterToggleMs = nowMs2; }
     }
-    // 状态未变：由 pumpProtectionTick 维持
+    else {
+      // 全停
+      if (heaterIsOn) { heaterOff(); heaterIsOn = false; heaterToggleMs = nowMs2; }
+      if (pumpIsOn) { pumpOff();   pumpIsOn = false; }
+    }
   }
 
-  // ===== 泵保护和曝气定时 =====
-  pumpProtectionTick();
+  // ===== 定时曝气 =====
   checkAndControlAerationByTimer();
 
   // ===== 上报 =====
@@ -541,18 +557,22 @@ bool doMeasurementAndSave() {
 
   for (size_t i = 0; i < t_outs.size(); ++i) {
     JsonObject obj = data.createNestedObject();
-    if (i < appConfig.keyTempOut.size()) obj["key"] = appConfig.keyTempOut[i];
-    else if (!appConfig.keyTempOut.empty()) obj["key"] = appConfig.keyTempOut[0] + "_X" + String(i);
-    else obj["key"] = String("temp_out_") + String(i);
+    if (i < appConfig.keyTempOut.size())      obj["key"] = appConfig.keyTempOut[i];
+    else if (!appConfig.keyTempOut.empty())   obj["key"] = appConfig.keyTempOut[0] + String("_X") + String(i);
+    else                                      obj["key"] = String("temp_out_") + String(i);
     obj["value"] = t_outs[i];
     obj["measured_time"] = ts;
   }
 
-  // 水箱温度不上报 key；放入 info 字段
-  doc["info"]["tank_temp"] = tankValid ? t_tank : NAN;
+  if (tankValid) {
+    doc["info"]["tank_temp"] = t_tank;
+    doc["info"]["tank_in_delta"] = delta_tank_in;
+  }
+  else {
+    doc["info"]["tank_temp"] = nullptr;
+    doc["info"]["tank_in_delta"] = nullptr;
+  }
   doc["info"]["tank_over"] = tankOver;
-  doc["info"]["tank_in_delta"] = tankValid ? delta_tank_in : NAN;
-  doc["info"]["pump_assist"] = gPumpAssistWanted; // 是否处于“仅泵助热”
 
   doc["info"]["msg"] = (hardCool ?
     msg :
@@ -560,6 +580,7 @@ bool doMeasurementAndSave() {
       String(" | t_in=") + String(t_in, 1) +
       String(", t_out_med=") + String(med_out, 1) +
       String(", diff=") + String(diff_now, 1)));
+
   doc["info"]["heat"] = heaterIsOn;
   doc["info"]["pump"] = pumpIsOn;
   doc["info"]["aeration"] = aerationIsOn;
@@ -644,6 +665,7 @@ void setup() {
 
   gCmdMutex = xSemaphoreCreateMutex();
 
+  // 恢复测量/曝气节拍（用 NVS 里的 “上次事件时间” 推算相位）
   if (preferences.begin(NVS_NAMESPACE, /*readOnly=*/true)) {
     unsigned long lastSecMea = preferences.getULong(NVS_KEY_LAST_MEAS, 0);
     unsigned long lastSecAera = preferences.getULong(NVS_KEY_LAST_AERATION, 0);
@@ -673,6 +695,7 @@ void setup() {
     preAerationMs = millis() - appConfig.aerationInterval;
   }
 
+  // 上线消息
   String nowStr = getTimeString();
   String lastMeasStr = "unknown";
   if (preferences.begin(NVS_NAMESPACE, true)) {
@@ -696,6 +719,7 @@ void setup() {
   Serial.println(ok ? "[MQTT] 上线消息发送成功" : "[MQTT] 上线消息发送失败");
   Serial.println("[MQTT] Payload: " + bootMsg);
 
+  // 后台任务
   xTaskCreatePinnedToCore(measurementTask, "MeasureTask", 8192, NULL, 1, NULL, 1);
   xTaskCreatePinnedToCore(commandTask, "CommandTask", 4096, NULL, 1, NULL, 1);
 
@@ -705,7 +729,5 @@ void setup() {
 // ========================= 主循环 =========================
 void loop() {
   maintainMQTT(5000);
-  // 如需更“实时”地处理尾流/冷却/助热，可在此额外调用：
-  // pumpProtectionTick();
   delay(100);
 }

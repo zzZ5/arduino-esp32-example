@@ -36,9 +36,6 @@ struct AppConfig {
 	uint32_t aerationInterval;
 	uint32_t aerationDuration;
 
-	// 水泵最大持续运行时间（单位：毫秒）
-	uint32_t pumpMaxDuration;
-
 };
 
 extern AppConfig appConfig;

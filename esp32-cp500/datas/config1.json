@@ -39,6 +39,5 @@
     "enabled": true,
     "interval": 300000,
     "duration": 300000
-  },
-  "pump_max_duration": 300000
+  }
 }
