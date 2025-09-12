@@ -21,7 +21,7 @@
     "202.120.2.101"
   ],
   "pump_run_time": 60000,
-  "read_interval": 60000,
+  "read_interval": 600000,
   "equipment_key": "KgSERnY2Zn",
   "keys": {
     "CO2": "ue5RkzOpT5jGaQR",
