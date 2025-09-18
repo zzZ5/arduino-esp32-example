@@ -8,16 +8,16 @@
     "port": 1883,
     "user": "equipment",
     "pass": "ZNXK8888",
-    "clientId": "cp500_004",
-    "post_topic": "compostlab/AmGppmaICP/post/data",
-    "response_topic": "compostlab/AmGppmaICP/response"
+    "clientId": "cp500_006",
+    "post_topic": "compostlab/O5DGVbateN/post/data",
+    "response_topic": "compostlab/O5DGVbateN/response"
   },
   "keys": {
-    "temp_in": "QitVXkSgYJJtzK0",
+    "temp_in": "mqEGyxQVU56KPye",
     "temp_out": [
-      "I6xViXoHeNHFyEy",
-      "slLfXY8pPJqO2ui",
-      "Fh4se8VJuQKx4PW"
+      "wBshNTETXYHbTXE",
+      "dD8Hv9dOn0I8cFC",
+      "E9Pvk6dC0RRrZJq"
     ]
   },
   "post_interval": 60000,
@@ -34,7 +34,7 @@
   "temp_limitin_max": 75,
   "temp_limitout_min": 25,
   "temp_limitin_min": 25,
-  "equipment_key": "AmGppmaICP",
+  "equipment_key": "O5DGVbateN",
   "aeration_timer": {
     "enabled": true,
     "interval": 300000,

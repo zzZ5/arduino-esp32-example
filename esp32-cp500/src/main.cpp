@@ -364,6 +364,7 @@ bool doMeasurementAndSave() {
   }
 
   // 水箱温度有效性与上限
+
   bool  tankValid = !isnan(t_tank) && (t_tank > -10.0f) && (t_tank < 120.0f);
   bool  tankOver = tankValid && (t_tank >= TANK_TEMP_MAX_C);
   float delta_tank_in = tankValid ? (t_tank - t_in) : 0.0f; // 水箱-内温热差
@@ -373,7 +374,7 @@ bool doMeasurementAndSave() {
 
   // 配置快捷变量
   const float out_max = (float)appConfig.tempLimitOutMax;
-  const float out_min = (float)appConfig.tempLimitOutMin;   // 未在本文件中直接使用
+  const float out_min = (float)appConfig.tempLimitOutMin;   // 未在直接使用
   const float in_max = (float)appConfig.tempLimitInMax;    // 仅用于归一化，不做硬切断
   const float in_min = (float)appConfig.tempLimitInMin;
 
@@ -388,7 +389,8 @@ bool doMeasurementAndSave() {
       " ≥ " + String(out_max, 2) + "，强制冷却（关加热+关泵）";
   }
 
-  // ---- n-curve + 前瞻 + 回差（不触发外浴硬切时）----
+  // ---- n-curve + 前瞻 + 回差（不触发外浴硬切时）-----
+
   bool bathWantHeat = false; // 是否希望补热（原有算法核心判据，保持不改）
   bool needHeat = false; // 为保证“随时可泵助热”而主动给水箱补热
   bool needPump = false; // 满足仅泵助热条件时启动水泵（互斥：此时不加热）

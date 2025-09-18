@@ -1,0 +1,43 @@
+{
+	"wifi": {
+		"ssid": "Compostlab",
+		"password": "znxk8888"
+	},
+	"mqtt": {
+		"server": "118.25.108.254",
+		"port": 1883,
+		"user": "equipment",
+		"pass": "ZNXK8888",
+		"clientId": "cp500_005",
+		"post_topic": "compostlab/ZxecTK5PKw/post/data",
+		"response_topic": "compostlab/ZxecTK5PKw/response"
+	},
+	"keys": {
+		"temp_in": "hga1h6vDHj4Nqfd",
+		"temp_out": [
+			"KuatvV4BVCyc1gc",
+			"K49lShxE06Sv2HG",
+			"8eH7qmlXr4aOVK4"
+		]
+	},
+	"post_interval": 60000,
+	"ntp_host": [
+		"ntp.ntsc.ac.cn",
+		"ntp.aliyun.com",
+		"cn.ntp.org.cn",
+		"ntp.tuna.tsinghua.edu.cn",
+		"ntp.sjtu.edu.cn",
+		"202.120.2.101"
+	],
+	"temp_maxdif": 5,
+	"temp_limitout_max": 65,
+	"temp_limitin_max": 75,
+	"temp_limitout_min": 25,
+	"temp_limitin_min": 25,
+	"equipment_key": "ZxecTK5PKw",
+	"aeration_timer": {
+		"enabled": true,
+		"interval": 300000,
+		"duration": 300000
+	}
+}
