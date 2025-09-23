@@ -105,8 +105,8 @@ static unsigned long lastMedOutMs = 0;         // 上次外浴中位温时间戳
 
 // ========================= 水箱温度安全&参与控制 =========================
 static const float TANK_TEMP_MAX_C = 80.0f; // 水箱温度上限 80℃
-static const float TANK_PUMP_DELTA_ON = 6.0f;  // 水箱-内温热差 ≥6.0℃ 可仅泵助热
-static const float TANK_PUMP_DELTA_OFF = 4.0f;  // 回差：<4.0℃ 退出仅泵助热
+static const float TANK_PUMP_DELTA_ON = 8.0f;  // 水箱-内温热差 ≥8.0℃ 可仅泵助热
+static const float TANK_PUMP_DELTA_OFF = 5.0f;  // 回差：<5.0℃ 退出仅泵助热
 
 // ========================= 全局状态 =========================
 bool heaterIsOn = false;  // 加热器状态
@@ -473,38 +473,63 @@ bool doMeasurementAndSave() {
     }
 
     // 水箱上限：强制停热
-    if (tankValid && t_tank >= TANK_TEMP_MAX_C) {
+    if (!tankValid || tankOver) {
       bathWantHeat = false;
-      reason += " | Tank≥80℃：强制停热";
+      needHeat = false;
+      reason += " | Tank≥80℃/无读数：强制停热";
+      if (heaterIsOn) {
+        heaterOff(); heaterIsOn = false; heaterToggleMs = millis();
+        Serial.println("[SAFETY] Tank 温度无效，强制关闭加热");
+      }
     }
 
-    // 若当前不泵或尚未满足仅泵阈值，则优先把水箱加热到 Δ≥ON（保证随时可泵助热）
-    if (tankValid && !heaterManualActive && (t_tank < TANK_TEMP_MAX_C) &&
-      (delta_tank_in < TANK_PUMP_DELTA_ON)) {
+    // 若当前不泵，则优先把水箱加热到 Δ≥ON（保证随时可泵助热） 
+    if (tankValid && !bathWantHeat && !heaterManualActive && !tankOver && (delta_tank_in < TANK_PUMP_DELTA_ON)) {
       needHeat = true; // “needHeat”=优先给水箱加热（非仅泵时）
+      needPump = false;
+      reason += " | tankΔ=" + String(delta_tank_in, 1) +
+        "℃ < " + String(TANK_PUMP_DELTA_ON, 1) + "℃ → 加热";
     }
 
-    // 若需要补热，且水箱足够热（带回差），则进入“仅泵助热”，并与加热器互斥
-    static bool lastAssist = false; // 仅泵助热回差记忆
-    if (!heaterManualActive && !pumpManualActive && !tankOver && bathWantHeat && tankValid) {
-      bool canAssistOn = (delta_tank_in >= TANK_PUMP_DELTA_ON);
-      bool keepAssist = (lastAssist && delta_tank_in >= TANK_PUMP_DELTA_OFF);
-      if ((canAssistOn || keepAssist) && !needHeat) {
-        needPump = true;
-        bathWantHeat = false; // 仅泵与加热互斥
-        lastAssist = true;
-        reason += String(" | tankΔ=") + String(delta_tank_in, 1) +
-          "℃≥" + String(TANK_PUMP_DELTA_ON, 1) + "℃ → 仅泵助热";
+    // ---- 泵助热 vs 加热的切换逻辑 ----
+    if (tankValid && bathWantHeat && !heaterManualActive && !pumpManualActive && !tankOver) {
+      if (pumpIsOn) {
+        // 当前已经在泵助热模式 → 只有 Δ < OFF 阈值时才退出，切换到加热
+        if (delta_tank_in < TANK_PUMP_DELTA_OFF) {
+          needPump = false;
+          needHeat = true;
+          reason += String(" | tankΔ=") + String(delta_tank_in, 1) +
+            "℃ < " + String(TANK_PUMP_DELTA_OFF, 1) + "℃ → 退出泵助热，加热";
+        }
+        else {
+          needPump = true;
+          needHeat = false;
+          reason += String(" | tankΔ=") + String(delta_tank_in, 1) +
+            "℃ ≥ " + String(TANK_PUMP_DELTA_OFF, 1) + "℃ → 保持泵助热";
+        }
       }
       else {
-        needPump = false;
-        lastAssist = false;
+        // 当前不在泵助热模式 → 只有 Δ > ON 阈值时才进入
+        if (delta_tank_in > TANK_PUMP_DELTA_ON) {
+          needPump = true;
+          needHeat = false;
+          reason += String(" | tankΔ=") + String(delta_tank_in, 1) +
+            "℃ > " + String(TANK_PUMP_DELTA_ON, 1) + "℃ → 进入泵助热";
+        }
+        else {
+          needPump = false;
+          needHeat = true;
+          reason += String(" | tankΔ=") + String(delta_tank_in, 1) +
+            "℃ ≤ " + String(TANK_PUMP_DELTA_ON, 1) + "℃ → 加热";
+        }
       }
     }
     else {
+      // 其它情况：不满足 bathWantHeat，或者手动锁/过温
       needPump = false;
-      lastAssist = false;
+      // needHeat 保持由前面 bathWantHeat 判定
     }
+
 
     // 最小开/停机时间抑制（水箱过温或仅泵助热时跳过抑制）
     bool skipMinTime = tankOver || needPump;
