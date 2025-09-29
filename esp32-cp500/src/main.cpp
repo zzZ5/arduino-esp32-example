@@ -105,8 +105,8 @@ static unsigned long lastMedOutMs = 0;         // 上次外浴中位温时间戳
 
 // ========================= 水箱温度安全&参与控制 =========================
 static const float TANK_TEMP_MAX_C = 80.0f; // 水箱温度上限 80℃
-static const float TANK_PUMP_DELTA_ON = 8.0f;  // 水箱-内温热差 ≥8.0℃ 可仅泵助热
-static const float TANK_PUMP_DELTA_OFF = 5.0f;  // 回差：<5.0℃ 退出仅泵助热
+static const float TANK_PUMP_DELTA_ON = 10.0f;  // 水箱-内温热差 ≥10.0℃ 可仅泵助热
+static const float TANK_PUMP_DELTA_OFF = 8.0f;  // 回差：<8.0℃ 退出仅泵助热
 
 // ========================= 全局状态 =========================
 bool heaterIsOn = false;  // 加热器状态
