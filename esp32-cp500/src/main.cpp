@@ -141,11 +141,11 @@ float median(std::vector<float> values,
 // 低温时允许更小Δ，高温时需要更大Δ；归一化仍使用 t_in 的上下限 in_min/in_max；再叠加“学习补偿”（仅泵无效时抬高）。
 static const float TANK_PUMP_DELTA_ON_MIN = 6.0f;   // 低温下限（℃）
 static const float TANK_PUMP_DELTA_ON_MAX = 25.0f;  // 高温上限（℃）
-static const float TANK_PUMP_HYST = 2.0f;    // 回差：Δ_off = Δ_on - HYST（℃）
+static const float TANK_PUMP_HYST = 3.0f;    // 回差：Δ_off = Δ_on - HYST（℃）
 
 // 学习补偿（每轮测量轻微自适应），以 t_out（中位）升温作为有效性判据
-static const float PUMP_LEARN_STEP_UP = 0.5f;    // 仅泵无效→抬高阈值（℃/次）
-static const float PUMP_LEARN_STEP_DOWN = 0.1f;    // 有效或未仅泵→缓慢回落（℃/次）
+static const float PUMP_LEARN_STEP_UP = 0.3f;    // 仅泵无效→抬高阈值（℃/次）
+static const float PUMP_LEARN_STEP_DOWN = 0.15f;    // 有效或未仅泵→缓慢回落（℃/次）
 static const float PUMP_LEARN_MAX = 8.0f;    // 补偿上限（℃）
 static const float PUMP_PROGRESS_MIN = 0.05f;   // 本轮 t_out_med 升温 < 0.05℃ 视为“无效”
 
@@ -154,41 +154,49 @@ static float gLastToutMed = NAN;    // 上一轮 t_out 的中位温（用于判�
 
 inline float lerp(float a, float b, float t) { return a + (b - a) * t; }
 
-// 根据 t_in 在 [in_min, in_max] 的相对位置计算自适应 Δ_on/Δ_off（控制对象仍是 t_out）
+// 根据 t_in 在 [in_min, in_max] 的相对位置计算自适应 Δ_on / Δ_off（Δ_off 随温度/Δ_on 自适应）
 static void computePumpDeltas(float t_in, float in_min, float in_max,
   float& delta_on, float& delta_off) {
-  // 简单工具
   auto clamp = [](float v, float lo, float hi) { return v < lo ? lo : (v > hi ? hi : v); };
-  // 允许的上界 = 现有最大阈值 + 学习补偿上限（都已存在）
-  const float MAX_ALLOWED = TANK_PUMP_DELTA_ON_MAX + PUMP_LEARN_MAX;
+  const float MAX_ALLOWED = TANK_PUMP_DELTA_ON_MAX + PUMP_LEARN_MAX; // 仅本地使用
+
+  // 把“中温回差（℃）”转成“比例”：在 Δ_on 约为中值时，回差≈TANK_PUMP_HYST
+  const float mid_on = 0.5f * (TANK_PUMP_DELTA_ON_MIN + TANK_PUMP_DELTA_ON_MAX);
+  const float hyst_rat = (mid_on > 0.1f) ? (TANK_PUMP_HYST / mid_on) : 0.2f; // 常见≈0.18~0.2
+
+  auto dyn_off = [&](float on) {          // 根据 Δ_on 计算自适应 Δ_off
+    float hyst = hyst_rat * on;          // 回差 = 比例 × Δ_on
+    return fmaxf(0.5f, on - hyst);       // 保证 Δ_off 不小于 0.5℃
+    };
 
   // 上下限无效时退化
   if (!isfinite(in_min) || !isfinite(in_max) || in_max <= in_min) {
     delta_on = clamp(TANK_PUMP_DELTA_ON_MIN + gPumpDeltaBoost, TANK_PUMP_DELTA_ON_MIN, MAX_ALLOWED);
-    delta_off = fmaxf(0.5f, delta_on - TANK_PUMP_HYST);
+    delta_off = dyn_off(delta_on);
     return;
   }
 
-  // —— 区外早返回：记得叠加 boost，并做最小/最大保护 —— 
+  // 区外早返回（仍叠加学习补偿；做简单钳位）
   if (t_in < in_min) {
     delta_on = clamp(TANK_PUMP_DELTA_ON_MIN + gPumpDeltaBoost, TANK_PUMP_DELTA_ON_MIN, MAX_ALLOWED);
-    delta_off = fmaxf(0.5f, delta_on - TANK_PUMP_HYST);
+    delta_off = dyn_off(delta_on);
     return;
   }
   if (t_in > in_max) {
     delta_on = clamp(TANK_PUMP_DELTA_ON_MAX + gPumpDeltaBoost, TANK_PUMP_DELTA_ON_MIN, MAX_ALLOWED);
-    delta_off = fmaxf(0.5f, delta_on - TANK_PUMP_HYST);
+    delta_off = dyn_off(delta_on);
     return;
   }
 
-  // —— 区间内平滑 —— 
+  // 区间内：n-curve 平滑 + 学习补偿
   float u = (t_in - in_min) / (in_max - in_min);   // 0..1
   const float gamma = 1.6f;
   float base_on = lerp(TANK_PUMP_DELTA_ON_MIN, TANK_PUMP_DELTA_ON_MAX, powf(u, gamma));
 
   delta_on = clamp(base_on + gPumpDeltaBoost, TANK_PUMP_DELTA_ON_MIN, MAX_ALLOWED);
-  delta_off = fmaxf(0.5f, delta_on - TANK_PUMP_HYST);
+  delta_off = dyn_off(delta_on);
 }
+
 
 
 // ========================= 配置更新函数 =========================
