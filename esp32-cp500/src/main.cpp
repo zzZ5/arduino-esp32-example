@@ -105,7 +105,7 @@ static float        lastMedOut = NAN;          // 上次外浴中位温
 static unsigned long lastMedOutMs = 0;         // 上次外浴中位温时间戳（ms）
 
 // ========================= 水箱温度安全&参与控制 =========================
-static const float TANK_TEMP_MAX_C = 80.0f; // 水箱温度上限 80℃
+static const float TANK_TEMP_MAX_C = 90.0f; // 水箱温度上限 80℃
 
 // ========================= 全局状态 =========================
 bool heaterIsOn = false;  // 加热器状态
@@ -140,13 +140,13 @@ float median(std::vector<float> values,
 // ========================= [ADAPTIVE_TOUT] 仅泵助热阈值：自适应 + 学习补偿 =========================
 // 低温时允许更小Δ，高温时需要更大Δ；归一化仍使用 t_in 的上下限 in_min/in_max；再叠加“学习补偿”（仅泵无效时抬高）。
 static const float TANK_PUMP_DELTA_ON_MIN = 6.0f;   // 低温下限（℃）
-static const float TANK_PUMP_DELTA_ON_MAX = 15.0f;  // 高温上限（℃）
+static const float TANK_PUMP_DELTA_ON_MAX = 25.0f;  // 高温上限（℃）
 static const float TANK_PUMP_HYST = 2.0f;    // 回差：Δ_off = Δ_on - HYST（℃）
 
 // 学习补偿（每轮测量轻微自适应），以 t_out（中位）升温作为有效性判据
-static const float PUMP_LEARN_STEP_UP = 0.2f;    // 仅泵无效→抬高阈值（℃/次）
-static const float PUMP_LEARN_STEP_DOWN = 0.1f;    // 有效或未仅泵→缓慢回落（℃/次）
-static const float PUMP_LEARN_MAX = 4.0f;    // 补偿上限（℃）
+static const float PUMP_LEARN_STEP_UP = 0.5f;    // 仅泵无效→抬高阈值（℃/次）
+static const float PUMP_LEARN_STEP_DOWN = 0.2f;    // 有效或未仅泵→缓慢回落（℃/次）
+static const float PUMP_LEARN_MAX = 8.0f;    // 补偿上限（℃）
 static const float PUMP_PROGRESS_MIN = 0.05f;   // 本轮 t_out_med 升温 < 0.05℃ 视为“无效”
 
 static float gPumpDeltaBoost = 0.0f;   // 学习补偿（0..PUMP_LEARN_MAX）
