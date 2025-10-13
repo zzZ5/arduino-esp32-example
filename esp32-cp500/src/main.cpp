@@ -4,7 +4,7 @@
  *
  * 功能概要
  * - 通过多探头获取外浴温度（中位去噪）、内核温度和水箱温度
- * - 使用 n-curve + 前瞻斜率 + 回差，判定是否需要“补热”（bathWantHeat）
+ * - 使用 n-curve（单阈值，无预测/无回差）判定是否需要“补热”（bathWantHeat）
  * - 互斥控制：加热器与水泵绝不同时运行
  * - “needHeat”用于给水箱预热，保证 (tank - t_out_med) ≥ Δ_on（自适应），随时可“仅泵助热”
  * - “仅泵助热”条件：水箱→外浴热差足够（带回差，自适应）；此时停止加热，只开泵
@@ -43,7 +43,7 @@
  *     "tank_temp": <number|null>,
  *     "tank_over": <bool>,
  *     "tank_in_delta": <number|null>,
- *     "tank_out_delta": <number|null>,   // [ADAPTIVE_TOUT] 新增
+ *     "tank_out_delta": <number|null>,   // [ADAPTIVE_TOUT]
  *     "msg": "<简要决策信息>",
  *     "heat": <bool>,          // 加热器当前状态
  *     "pump": <bool>,          // 水泵当前状态
@@ -87,30 +87,15 @@ std::vector<PendingCommand> pendingCommands;
 SemaphoreHandle_t gCmdMutex = nullptr;
 
 // ========================= 防抖/软锁 =========================
-// （最小开/停机抑制：如用机械继电器，建议保留≥3~5s；用 SSR 可设为 0）
-static const unsigned long HEATER_MIN_ON_MS = 30000;   // 加热器最短开机 30s
-static const unsigned long HEATER_MIN_OFF_MS = 30000;  // 加热器最短关机 30s
 static unsigned long heaterToggleMs = 0;               // 最近一次加热器切换时刻（ms）
-
-// 手动软锁：在手动时段内，自动逻辑不抢夺控制
 static unsigned long aerationManualUntilMs = 0;        // 手动曝气软锁截止（ms）
 static unsigned long pumpManualUntilMs = 0;            // 手动泵软锁截止（ms）
 static unsigned long heaterManualUntilMs = 0;          // 手动加热软锁截止（ms）
 
-// ========================= 延迟补偿：前瞻预测 + 回差 =========================
-static const float PRED_LOOKAHEAD_MIN = 3.0f;  // 前瞻预测 3 分钟
-static const float DIFF_HYST = 0.5f;           // 回差（关断阈值比开机阈值低 0.5℃）
-static const float SLOPE_LIMIT = 1.5f;         // 外浴温度斜率限幅（℃/min）
-static float        lastMedOut = NAN;          // 上次外浴中位温
-static unsigned long lastMedOutMs = 0;         // 上次外浴中位温时间戳（ms）
-
-// ========================= 水箱温度安全&参与控制 =========================
-static const float TANK_TEMP_MAX_C = 90.0f; // 水箱温度上限 80℃
-
 // ========================= 全局状态 =========================
-bool heaterIsOn = false;  // 加热器状态
-bool pumpIsOn = false;  // 循环泵状态
-bool aerationIsOn = false;  // 曝气状态
+bool heaterIsOn = false;   // 加热器状态
+bool pumpIsOn = false;     // 循环泵状态
+bool aerationIsOn = false; // 曝气状态
 
 // ========================= 工具：鲁棒中位数（含离群剔除） =========================
 float median(std::vector<float> values,
@@ -138,68 +123,54 @@ float median(std::vector<float> values,
 }
 
 // ========================= [ADAPTIVE_TOUT] 仅泵助热阈值：自适应 + 学习补偿 =========================
-// 低温时允许更小Δ，高温时需要更大Δ；归一化仍使用 t_in 的上下限 in_min/in_max；再叠加“学习补偿”（仅泵无效时抬高）。
-static const float TANK_PUMP_DELTA_ON_MIN = 6.0f;   // 低温下限（℃）
-static const float TANK_PUMP_DELTA_ON_MAX = 25.0f;  // 高温上限（℃）
-static const float TANK_PUMP_HYST = 3.0f;    // 回差：Δ_off = Δ_on - HYST（℃）
-
-// 学习补偿（每轮测量轻微自适应），以 t_out（中位）升温作为有效性判据
-static const float PUMP_LEARN_STEP_UP = 0.5f;    // 仅泵无效→抬高阈值（℃/次）
-static const float PUMP_LEARN_STEP_DOWN = 0.2f;    // 有效或未仅泵→缓慢回落（℃/次）
-static const float PUMP_LEARN_MAX = 8.0f;    // 补偿上限（℃）
-static const float PUMP_PROGRESS_MIN = 0.05f;   // 本轮 t_out_med 升温 < 0.05℃ 视为“无效”
-
-static float gPumpDeltaBoost = 0.0f;   // 学习补偿（0..PUMP_LEARN_MAX）
-static float gLastToutMed = NAN;    // 上一轮 t_out 的中位温（用于判断仅泵是否带来升温）
+static float gPumpDeltaBoost = 0.0f;  // 学习补偿（0..appConfig.pumpLearnMax）
+static float gLastToutMed = NAN;      // 上一轮 t_out 的中位温（用于判断仅泵是否带来升温）
 
 inline float lerp(float a, float b, float t) { return a + (b - a) * t; }
 
-// 根据 t_in 在 [in_min, in_max] 的相对位置计算自适应 Δ_on / Δ_off（Δ_off 随温度/Δ_on 自适应）
+// 根据 t_in 在 [in_min, in_max] 的相对位置计算自适应 Δ_on / Δ_off（Δ_off 随 Δ_on 比例回差）
 static void computePumpDeltas(float t_in, float in_min, float in_max,
   float& delta_on, float& delta_off) {
   auto clamp = [](float v, float lo, float hi) { return v < lo ? lo : (v > hi ? hi : v); };
-  const float MAX_ALLOWED = TANK_PUMP_DELTA_ON_MAX + PUMP_LEARN_MAX; // 仅本地使用
+  const float MAX_ALLOWED = appConfig.pumpDeltaOnMax + appConfig.pumpLearnMax;
 
-  // 把“中温回差（℃）”转成“比例”：在 Δ_on 约为中值时，回差≈TANK_PUMP_HYST
-  const float mid_on = 0.5f * (TANK_PUMP_DELTA_ON_MIN + TANK_PUMP_DELTA_ON_MAX);
-  const float hyst_rat = (mid_on > 0.1f) ? (TANK_PUMP_HYST / mid_on) : 0.2f; // 常见≈0.18~0.2
+  // 把“名义回差（℃）”换算成“比例”：在 Δ_on≈中值时，回差≈appConfig.pumpHystNom
+  const float mid_on = 0.5f * (appConfig.pumpDeltaOnMin + appConfig.pumpDeltaOnMax);
+  const float hyst_rat = (mid_on > 0.1f) ? (appConfig.pumpHystNom / mid_on) : 0.2f;
 
-  auto dyn_off = [&](float on) {          // 根据 Δ_on 计算自适应 Δ_off
-    float hyst = hyst_rat * on;          // 回差 = 比例 × Δ_on
-    return fmaxf(0.5f, on - hyst);       // 保证 Δ_off 不小于 0.5℃
+  auto dyn_off = [&](float on) {           // 根据 Δ_on 计算自适应 Δ_off
+    float hyst = hyst_rat * on;            // 回差 = 比例 × Δ_on
+    return fmaxf(0.5f, on - hyst);         // 保证 Δ_off 不小于 0.5℃
     };
 
   // 上下限无效时退化
   if (!isfinite(in_min) || !isfinite(in_max) || in_max <= in_min) {
-    delta_on = clamp(TANK_PUMP_DELTA_ON_MIN + gPumpDeltaBoost, TANK_PUMP_DELTA_ON_MIN, MAX_ALLOWED);
+    delta_on = clamp(appConfig.pumpDeltaOnMin + gPumpDeltaBoost, appConfig.pumpDeltaOnMin, MAX_ALLOWED);
     delta_off = dyn_off(delta_on);
     return;
   }
 
-  // 区外早返回（仍叠加学习补偿；做简单钳位）
+  // 区外早返回（仍叠加学习补偿）
   if (t_in < in_min) {
-    delta_on = clamp(TANK_PUMP_DELTA_ON_MIN + gPumpDeltaBoost, TANK_PUMP_DELTA_ON_MIN, MAX_ALLOWED);
+    delta_on = clamp(appConfig.pumpDeltaOnMin + gPumpDeltaBoost, appConfig.pumpDeltaOnMin, MAX_ALLOWED);
     delta_off = dyn_off(delta_on);
     return;
   }
   if (t_in > in_max) {
-    delta_on = clamp(TANK_PUMP_DELTA_ON_MAX + gPumpDeltaBoost, TANK_PUMP_DELTA_ON_MIN, MAX_ALLOWED);
+    delta_on = clamp(appConfig.pumpDeltaOnMax + gPumpDeltaBoost, appConfig.pumpDeltaOnMin, MAX_ALLOWED);
     delta_off = dyn_off(delta_on);
     return;
   }
 
   // 区间内：n-curve 平滑 + 学习补偿
   float u = (t_in - in_min) / (in_max - in_min);   // 0..1
-  const float gamma = 1.6f;
-  float base_on = lerp(TANK_PUMP_DELTA_ON_MIN, TANK_PUMP_DELTA_ON_MAX, powf(u, gamma));
+  float base_on = lerp(appConfig.pumpDeltaOnMin, appConfig.pumpDeltaOnMax, powf(u, appConfig.pumpNCurveGamma));
 
-  delta_on = clamp(base_on + gPumpDeltaBoost, TANK_PUMP_DELTA_ON_MIN, MAX_ALLOWED);
+  delta_on = clamp(base_on + gPumpDeltaBoost, appConfig.pumpDeltaOnMin, MAX_ALLOWED);
   delta_off = dyn_off(delta_on);
 }
 
-
-
-// ========================= 配置更新函数 =========================
+// ========================= 配置更新函数（含分组字段） =========================
 bool updateAppConfigFromJson(JsonObject obj) {
   if (obj.containsKey("wifi")) {
     JsonObject wifi = obj["wifi"];
@@ -233,7 +204,7 @@ bool updateAppConfigFromJson(JsonObject obj) {
   if (obj.containsKey("equipment_key")) appConfig.equipmentKey = obj["equipment_key"].as<String>();
   if (obj.containsKey("keys")) {
     JsonObject keys = obj["keys"];
-    if (keys.containsKey("temp_in")) appConfig.keyTempIn = keys["temp_in"].as<String>();
+    if (keys.containsKey("temp_in"))   appConfig.keyTempIn = keys["temp_in"].as<String>();
     if (keys.containsKey("temp_out") && keys["temp_out"].is<JsonArray>()) {
       appConfig.keyTempOut.clear();
       for (JsonVariant v : keys["temp_out"].as<JsonArray>()) appConfig.keyTempOut.push_back(v.as<String>());
@@ -245,6 +216,37 @@ bool updateAppConfigFromJson(JsonObject obj) {
     if (aer.containsKey("interval")) appConfig.aerationInterval = aer["interval"].as<uint32_t>();
     if (aer.containsKey("duration")) appConfig.aerationDuration = aer["duration"].as<uint32_t>();
   }
+
+  // ====== 分组调参（与你的 config.json 对齐）======
+  if (obj.containsKey("safety")) {
+    JsonObject s = obj["safety"];
+    if (s.containsKey("tank_temp_max")) appConfig.tankTempMax = s["tank_temp_max"].as<float>();
+  }
+  if (obj.containsKey("heater_guard")) {
+    JsonObject hg = obj["heater_guard"];
+    if (hg.containsKey("min_on_ms"))  appConfig.heaterMinOnMs = hg["min_on_ms"].as<uint32_t>();
+    if (hg.containsKey("min_off_ms")) appConfig.heaterMinOffMs = hg["min_off_ms"].as<uint32_t>();
+  }
+  if (obj.containsKey("pump_adaptive")) {
+    JsonObject pa = obj["pump_adaptive"];
+    if (pa.containsKey("delta_on_min")) appConfig.pumpDeltaOnMin = pa["delta_on_min"].as<float>();
+    if (pa.containsKey("delta_on_max")) appConfig.pumpDeltaOnMax = pa["delta_on_max"].as<float>();
+    if (pa.containsKey("hyst_nom"))     appConfig.pumpHystNom = pa["hyst_nom"].as<float>();
+    if (pa.containsKey("ncurve_gamma")) appConfig.pumpNCurveGamma = pa["ncurve_gamma"].as<float>();
+  }
+  if (obj.containsKey("pump_learning")) {
+    JsonObject pl = obj["pump_learning"];
+    if (pl.containsKey("step_up"))      appConfig.pumpLearnStepUp = pl["step_up"].as<float>();
+    if (pl.containsKey("step_down"))    appConfig.pumpLearnStepDown = pl["step_down"].as<float>();
+    if (pl.containsKey("max"))          appConfig.pumpLearnMax = pl["max"].as<float>();
+    if (pl.containsKey("progress_min")) appConfig.pumpProgressMin = pl["progress_min"].as<float>();
+  }
+  if (obj.containsKey("curves")) {
+    JsonObject cv = obj["curves"];
+    if (cv.containsKey("in_diff_ncurve_gamma"))
+      appConfig.inDiffNCurveGamma = cv["in_diff_ncurve_gamma"].as<float>();
+  }
+
   return true;
 }
 
@@ -359,7 +361,7 @@ void executeCommand(const PendingCommand& pcmd) {
     if (pcmd.action == "on") {
       // 互斥：开泵前先关加热
       if (heaterIsOn) { heaterOff(); heaterIsOn = false; heaterToggleMs = millis(); }
-      heaterManualUntilMs = 0;         // 清除加热软锁
+      heaterManualUntilMs = 0;        // 清除加热软锁
       pumpOn(); pumpIsOn = true;
       if (pcmd.duration > 0) pumpManualUntilMs = millis() + pcmd.duration;
       scheduleOff("pump", pcmd.duration);
@@ -410,8 +412,8 @@ bool doMeasurementAndSave() {
   Serial.println("[Measure] 采集温度");
 
   float t_in = readTempIn();                 // 核心温度（内部）
-  std::vector<float> t_outs = readTempOut(); // 外浴多个探头
-  float t_tank = readTempTank();             // 水箱温度（用于控制与上报 info）
+  std::vector<float> t_outs = readTempOut();   // 外浴多个探头
+  float t_tank = readTempTank();               // 水箱温度（用于控制与上报 info）
 
   if (t_outs.empty()) {
     Serial.println("[Measure] 外部温度读数为空，跳过本轮控制");
@@ -426,9 +428,9 @@ bool doMeasurementAndSave() {
 
   // 水箱温度有效性与上限
   bool  tankValid = !isnan(t_tank) && (t_tank > -10.0f) && (t_tank < 120.0f);
-  bool  tankOver = tankValid && (t_tank >= TANK_TEMP_MAX_C);
-  float delta_tank_in = tankValid ? (t_tank - t_in) : 0.0f; // 水箱-内温热差（保留用于上报）
-  float delta_tank_out = tankValid ? (t_tank - med_out) : 0.0f; // [ADAPTIVE_TOUT] 水箱-外浴热差
+  bool  tankOver = tankValid && (t_tank >= appConfig.tankTempMax);
+  float delta_tank_in = tankValid ? (t_tank - t_in) : 0.0f;  // 水箱-内温热差（上报）
+  float delta_tank_out = tankValid ? (t_tank - med_out) : 0.0f;  // 水箱-外浴热差（用于仅泵）
 
   String ts = getTimeString();
   time_t nowEpoch = time(nullptr);
@@ -454,18 +456,20 @@ bool doMeasurementAndSave() {
   float DELTA_ON = 0.0f, DELTA_OFF = 0.0f;
   computePumpDeltas(t_in, in_min, in_max, DELTA_ON, DELTA_OFF);
 
-  // ---- n-curve + 前瞻 + 回差（不触发外浴硬切时）-----
-  bool bathWantHeat = false; // 是否希望补热（原有算法核心判据，保持不改）
-  bool needHeat = false; // 为保证“随时可泵助热”而主动给水箱补热
-  bool needPump = false; // 满足仅泵助热条件时启动水泵（互斥：此时不加热）
+  // ---- n-curve（无前瞻、无回差）-----
+  bool bathWantHeat = false; // 是否希望补热（仅按当前 diff_now 与单阈值比较）
+  bool needHeat = false; // 保证“随时可泵助热”的预热
+  bool needPump = false; // 满足仅泵助热条件时启动水泵（与加热互斥）
 
   String reason;
   if (!hardCool) {
-    if (t_in <= in_min) {
+    if (t_in < in_min) {
+      // 明显低于 in_min -> 直接补热
       bathWantHeat = true;
-      reason = String("t_in ") + String(t_in, 2) + " ≤ " + String(in_min, 2) + " → 补热";
+      reason = String("t_in ") + String(t_in, 2) + " < " + String(in_min, 2) + " → 补热";
     }
     else {
+      // n-curve：依据 t_in 在 [in_min, in_max] 的位置计算单阈值
       float u = 0.0f;
       if (in_max > in_min) {
         float t_ref = min(max(t_in, in_min), in_max);
@@ -473,51 +477,12 @@ bool doMeasurementAndSave() {
       }
       const float diff_max = (float)appConfig.tempMaxDiff;
       const float diff_min = max(0.1f, diff_max * 0.02f);
-      const float n_curve = 2.0f;
-      float DIFF_ON_MAX = diff_min + (diff_max - diff_min) * powf(u, n_curve);
-      float DIFF_OFF_MAX = DIFF_ON_MAX - DIFF_HYST;
+      float DIFF_THR = diff_min + (diff_max - diff_min) * powf(u, appConfig.inDiffNCurveGamma);
+      bathWantHeat = (diff_now > DIFF_THR);
 
-      unsigned long nowMs_pred = millis();
-      float slope_cpm = 0.0f;
-      if (!isnan(lastMedOut) && lastMedOutMs != 0) {
-        float dt_min = (nowMs_pred - lastMedOutMs) / 60000.0f;
-        if (dt_min > 0.001f) {
-          slope_cpm = (med_out - lastMedOut) / dt_min;
-          if (slope_cpm > SLOPE_LIMIT) slope_cpm = SLOPE_LIMIT;
-          if (slope_cpm < -SLOPE_LIMIT) slope_cpm = -SLOPE_LIMIT;
-        }
-      }
-      float med_out_pred = med_out + slope_cpm * PRED_LOOKAHEAD_MIN;
-      float diff_pred = t_in - med_out_pred;
-
-      if (!heaterIsOn) {
-        if (diff_pred > DIFF_ON_MAX) {
-          bathWantHeat = true;
-          reason = String("pred_diff=") + String(diff_pred, 2) +
-            " > on_thr " + String(DIFF_ON_MAX, 2) +
-            " | slope=" + String(slope_cpm, 2);
-        }
-        else {
-          bathWantHeat = false;
-          reason = String("pred_diff=") + String(diff_pred, 2) +
-            " ≤ on_thr " + String(DIFF_ON_MAX, 2) +
-            " | slope=" + String(slope_cpm, 2);
-        }
-      }
-      else {
-        if (diff_pred <= DIFF_OFF_MAX) {
-          bathWantHeat = false;
-          reason = String("pred_diff=") + String(diff_pred, 2) +
-            " ≤ off_thr " + String(DIFF_OFF_MAX, 2) +
-            " | slope=" + String(slope_cpm, 2);
-        }
-        else {
-          bathWantHeat = true;
-          reason = String("pred_diff=") + String(diff_pred, 2) +
-            " > off_thr " + String(DIFF_OFF_MAX, 2) +
-            " | slope=" + String(slope_cpm, 2);
-        }
-      }
+      reason = String("diff_now=") + String(diff_now, 2) +
+        (bathWantHeat ? " > " : " ≤ ") +
+        "thr " + String(DIFF_THR, 2);
     }
 
     // 手动加热软锁：自动逻辑不改变 heater 状态
@@ -540,25 +505,24 @@ bool doMeasurementAndSave() {
     if (!tankValid || tankOver) {
       bathWantHeat = false;
       needHeat = false;
-      reason += " | Tank≥80℃/无读数：强制停热";
+      reason += " | Tank≥上限/无读数：强制停热";
       if (heaterIsOn) {
         heaterOff(); heaterIsOn = false; heaterToggleMs = millis();
-        Serial.println("[SAFETY] Tank 温度无效，强制关闭加热");
+        Serial.println("[SAFETY] Tank 温度无效或过高，强制关闭加热");
       }
     }
 
-    // [ADAPTIVE_TOUT] 若当前不泵，则优先把水箱加热到 Δ_out ≥ Δ_on（保证随时可泵助热）
+    // 若当前不泵，则优先把水箱加热到 Δ_out ≥ Δ_on（保证随时可泵助热）
     if (tankValid && !bathWantHeat && !heaterManualActive && !tankOver && (delta_tank_out < DELTA_ON)) {
-      needHeat = true; // “needHeat”=优先给水箱加热（非仅泵时）
+      needHeat = true;
       needPump = false;
       reason += " | tankΔ=" + String(delta_tank_out, 1) +
         "℃ < Δ_on=" + String(DELTA_ON, 1) + "℃ → 加热";
     }
 
-    // ---- [ADAPTIVE_TOUT] 泵助热 vs 加热的切换逻辑（以 Δ_out 判据） ----
+    // ---- 泵助热 vs 加热（以 Δ_out 的 Δ_on/Δ_off 判据；泵侧回差保留）----
     if (tankValid && bathWantHeat && !heaterManualActive && !pumpManualActive && !tankOver) {
       if (pumpIsOn) {
-        // 已在泵助热 → 只有 Δ_out < Δ_off 才退出，切换到加热
         if (delta_tank_out < DELTA_OFF) {
           needPump = false;
           needHeat = true;
@@ -573,7 +537,6 @@ bool doMeasurementAndSave() {
         }
       }
       else {
-        // 不在泵助热 → 只有 Δ_out > Δ_on 才进入
         if (delta_tank_out > DELTA_ON) {
           needPump = true;
           needHeat = false;
@@ -589,39 +552,38 @@ bool doMeasurementAndSave() {
       }
     }
     else {
-      // 其它情况：不满足 bathWantHeat，或者手动锁/过温
       needPump = false;
-      // needHeat 保持由前面 bathWantHeat 判定
+      // needHeat 保持由前面逻辑决定
     }
 
     // 最小开/停机时间抑制（水箱过温或仅泵助热时跳过抑制）
     bool skipMinTime = tankOver || needPump;
     if (!skipMinTime) {
-      if (bathWantHeat && !heaterIsOn && (nowMs - heaterToggleMs) < HEATER_MIN_OFF_MS) {
+      if (bathWantHeat && !heaterIsOn && (nowMs - heaterToggleMs) < appConfig.heaterMinOffMs) {
         needHeat = false;  // 抑制新开热
         reason += " | 抑制(needHeat)：未到最小关断间隔";
       }
-      if (!bathWantHeat && heaterIsOn && (nowMs - heaterToggleMs) < HEATER_MIN_ON_MS) {
+      if (!bathWantHeat && heaterIsOn && (nowMs - heaterToggleMs) < appConfig.heaterMinOnMs) {
         bathWantHeat = true;  // 维持已开热
         reason += " | 维持(needHeat)：未到最小开机间隔";
       }
     }
   } // end !hardCool
 
-  // [ADAPTIVE_TOUT] —— 学习补偿：如果“仅泵”不带来 t_out 升温，就逐步提高阈值（减少仅泵机会） ——
+  // [ADAPTIVE_TOUT] —— 学习补偿：如果“仅泵”不带来 t_out 升温，就逐步提高阈值 —— 
   if (needPump || pumpIsOn) {
     if (!isnan(gLastToutMed)) {
       float dT_out = med_out - gLastToutMed;
-      if (dT_out < PUMP_PROGRESS_MIN) {
-        gPumpDeltaBoost = fminf(PUMP_LEARN_MAX, gPumpDeltaBoost + PUMP_LEARN_STEP_UP);  // 仅泵无效→抬高阈值
+      if (dT_out < appConfig.pumpProgressMin) {
+        gPumpDeltaBoost = fminf(appConfig.pumpLearnMax, gPumpDeltaBoost + appConfig.pumpLearnStepUp);   // 仅泵无效→抬高阈值
       }
       else {
-        gPumpDeltaBoost = fmaxf(0.0f, gPumpDeltaBoost - PUMP_LEARN_STEP_DOWN);          // 仅泵有效→缓慢回落
+        gPumpDeltaBoost = fmaxf(0.0f, gPumpDeltaBoost - appConfig.pumpLearnStepDown);                   // 仅泵有效→缓慢回落
       }
     }
   }
   else {
-    gPumpDeltaBoost = fmaxf(0.0f, gPumpDeltaBoost - PUMP_LEARN_STEP_DOWN);
+    gPumpDeltaBoost = fmaxf(0.0f, gPumpDeltaBoost - appConfig.pumpLearnStepDown);
   }
 
   // ---- 执行动作（互斥：泵与加热绝不同时运行）----
@@ -630,6 +592,7 @@ bool doMeasurementAndSave() {
     if (heaterIsOn) { heaterOff(); heaterIsOn = false; heaterToggleMs = nowMs2; }
     if (pumpIsOn) { pumpOff();   pumpIsOn = false; }
     pumpManualUntilMs = 0; // 清软锁
+    heaterManualUntilMs = 0; // 清加热软锁（硬保护优先）
   }
   else {
     if (needPump) {
@@ -673,24 +636,24 @@ bool doMeasurementAndSave() {
   if (tankValid) {
     doc["info"]["tank_temp"] = t_tank;
     doc["info"]["tank_in_delta"] = delta_tank_in;
-    doc["info"]["tank_out_delta"] = delta_tank_out; // [ADAPTIVE_TOUT] 新增
+    doc["info"]["tank_out_delta"] = delta_tank_out; // [ADAPTIVE_TOUT]
   }
   else {
     doc["info"]["tank_temp"] = nullptr;
     doc["info"]["tank_in_delta"] = nullptr;
-    doc["info"]["tank_out_delta"] = nullptr;        // [ADAPTIVE_TOUT] 新增
+    doc["info"]["tank_out_delta"] = nullptr;        // [ADAPTIVE_TOUT]
   }
   doc["info"]["tank_over"] = tankOver;
 
-  doc["info"]["msg"] = (hardCool ?
-    msg :
-    (String("[Heat-nCurve] ") + reason +
-      String(" | Δ_on=") + String(DELTA_ON, 1) +   // 便于在线观测
-      String(", Δ_off=") + String(DELTA_OFF, 1) +
-      String(", boost=") + String(gPumpDeltaBoost, 1) +
-      String(" | t_in=") + String(t_in, 1) +
-      String(", t_out_med=") + String(med_out, 1) +
-      String(", diff=") + String(diff_now, 1)));
+  doc["info"]["msg"] =
+    (hardCool ? msg :
+      (String("[Heat-nCurve] ") + reason +
+        String(" | Δ_on=") + String(DELTA_ON, 1) +
+        String(", Δ_off=") + String(DELTA_OFF, 1) +
+        String(", boost=") + String(gPumpDeltaBoost, 1) +
+        String(" | t_in=") + String(t_in, 1) +
+        String(", t_out_med=") + String(med_out, 1) +
+        String(", diff=") + String(diff_now, 1)));
 
   doc["info"]["heat"] = heaterIsOn;
   doc["info"]["pump"] = pumpIsOn;
@@ -705,10 +668,6 @@ bool doMeasurementAndSave() {
       preferences.end();
     }
   }
-
-  // 记录本次外浴中位数与时间，用于下次计算斜率
-  lastMedOut = med_out;
-  lastMedOutMs = millis();
 
   // [ADAPTIVE_TOUT] 记录本轮 t_out_med，用于下一轮“仅泵是否有效”的判定
   gLastToutMed = med_out;
@@ -815,7 +774,8 @@ void setup() {
   if (preferences.begin(NVS_NAMESPACE, true)) {
     unsigned long lastMeasSec = preferences.getULong(NVS_KEY_LAST_MEAS, 0);
     if (lastMeasSec > 0) {
-      struct tm* tm_info = localtime((time_t*)&lastMeasSec);
+      time_t t_last = (time_t)lastMeasSec;
+      struct tm* tm_info = localtime(&t_last);
       char buffer[32];
       strftime(buffer, sizeof(buffer), "%Y-%m-%d %H:%M:%S", tm_info);
       lastMeasStr = String(buffer);
