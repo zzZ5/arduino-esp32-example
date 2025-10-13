@@ -145,7 +145,7 @@ static const float TANK_PUMP_HYST = 2.0f;    // 回差：Δ_off = Δ_on - HYST�
 
 // 学习补偿（每轮测量轻微自适应），以 t_out（中位）升温作为有效性判据
 static const float PUMP_LEARN_STEP_UP = 0.5f;    // 仅泵无效→抬高阈值（℃/次）
-static const float PUMP_LEARN_STEP_DOWN = 0.2f;    // 有效或未仅泵→缓慢回落（℃/次）
+static const float PUMP_LEARN_STEP_DOWN = 0.1f;    // 有效或未仅泵→缓慢回落（℃/次）
 static const float PUMP_LEARN_MAX = 8.0f;    // 补偿上限（℃）
 static const float PUMP_PROGRESS_MIN = 0.05f;   // 本轮 t_out_med 升温 < 0.05℃ 视为“无效”
 
