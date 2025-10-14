@@ -31,7 +31,7 @@
 	],
 	"temp_maxdif": 5,
 	"temp_limitout_max": 65,
-	"temp_limitin_max": 75,
+	"temp_limitin_max": 70,
 	"temp_limitout_min": 25,
 	"temp_limitin_min": 25,
 	"equipment_key": "teEVTpuGbQ",
@@ -49,14 +49,14 @@
 	},
 	"pump_adaptive": {
 		"delta_on_min": 6.0,
-		"delta_on_max": 25.0,
+		"delta_on_max": 30.0,
 		"hyst_nom": 3.0,
 		"ncurve_gamma": 1.3
 	},
 	"pump_learning": {
 		"step_up": 0.5,
 		"step_down": 0.2,
-		"max": 8.0,
+		"max": 10.0,
 		"progress_min": 0.05
 	},
 	"curves": {
