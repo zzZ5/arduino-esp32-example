@@ -61,6 +61,11 @@ struct AppConfig {
 
 	// curves
 	float inDiffNCurveGamma;   // (t_in→差阈) 的 n-curve 指数
+
+	// ===== 新增：外浴层定置控温（bath_setpoint） =====
+	bool  bathSetEnabled;      // 开/关
+	float bathSetTarget;       // 目标外浴中位温(°C)
+	float bathSetHyst;         // 回差(°C)
 };
 
 extern AppConfig appConfig;

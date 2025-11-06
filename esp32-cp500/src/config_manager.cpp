@@ -12,9 +12,9 @@ static void fillDefaultsIfNeeded(AppConfig& c) {
 
 	// 温度上下限
 	if (c.tempLimitOutMax == 0) c.tempLimitOutMax = 75;
-	if (c.tempLimitInMax == 0) c.tempLimitInMax = 70;
+	if (c.tempLimitInMax == 0)  c.tempLimitInMax = 70;
 	if (c.tempLimitOutMin == 0) c.tempLimitOutMin = 25;
-	if (c.tempLimitInMin == 0) c.tempLimitInMin = 25;
+	if (c.tempLimitInMin == 0)  c.tempLimitInMin = 25;
 
 	// 曝气
 	if (c.aerationInterval == 0) c.aerationInterval = 600000; // 10min
@@ -23,13 +23,13 @@ static void fillDefaultsIfNeeded(AppConfig& c) {
 	// —— 分组参数默认（与你 main.cpp 的常量逻辑一致）——
 	if (c.tankTempMax <= 0) c.tankTempMax = 90.0f;
 
-	if (c.heaterMinOnMs == 0) c.heaterMinOnMs = 30000;
+	if (c.heaterMinOnMs == 0)  c.heaterMinOnMs = 30000;
 	if (c.heaterMinOffMs == 0) c.heaterMinOffMs = 30000;
 
-	if (c.pumpDeltaOnMin <= 0) c.pumpDeltaOnMin = 6.0f;
-	if (c.pumpDeltaOnMax <= 0) c.pumpDeltaOnMax = 25.0f;
-	if (c.pumpHystNom <= 0) c.pumpHystNom = 3.0f;
-	if (c.pumpNCurveGamma <= 0) c.pumpNCurveGamma = 1.3f;
+	if (c.pumpDeltaOnMin <= 0)   c.pumpDeltaOnMin = 6.0f;
+	if (c.pumpDeltaOnMax <= 0)   c.pumpDeltaOnMax = 25.0f;
+	if (c.pumpHystNom <= 0)    c.pumpHystNom = 3.0f;
+	if (c.pumpNCurveGamma <= 0)  c.pumpNCurveGamma = 1.3f;
 
 	if (c.pumpLearnStepUp <= 0) c.pumpLearnStepUp = 0.5f;
 	if (c.pumpLearnStepDown <= 0) c.pumpLearnStepDown = 0.2f;
@@ -37,6 +37,14 @@ static void fillDefaultsIfNeeded(AppConfig& c) {
 	if (c.pumpProgressMin <= 0) c.pumpProgressMin = 0.05f;
 
 	if (c.inDiffNCurveGamma <= 0) c.inDiffNCurveGamma = 2.0f;
+
+	// —— 新增：bath_setpoint 默认值 —— 
+	// 若用户未配置该分组，保持关闭，但给出合理默认参数，便于后续远程启用
+	// target 默认 45℃、回差 0.8℃
+	// 注意：main.cpp 会在运行时将 target 夹紧到 < tempLimitOutMax
+	c.bathSetEnabled = c.bathSetEnabled; // 若未写入，保持 false（全局静态默认是随机的，这里不依赖）
+	if (c.bathSetTarget <= 0) c.bathSetTarget = 45.0f;
+	if (c.bathSetHyst <= 0) c.bathSetHyst = 0.8f;
 }
 
 bool initSPIFFS() {
@@ -141,6 +149,7 @@ bool loadConfigFromSPIFFS(const char* path) {
 	JsonObject pumpAdaptive = doc["pump_adaptive"];
 	JsonObject pumpLearning = doc["pump_learning"];
 	JsonObject curves = doc["curves"];
+	JsonObject bathSet = doc["bath_setpoint"];
 
 	// safety
 	appConfig.tankTempMax = readF(safety, "tank_temp_max", appConfig.tankTempMax);
@@ -163,6 +172,11 @@ bool loadConfigFromSPIFFS(const char* path) {
 
 	// curves
 	appConfig.inDiffNCurveGamma = readF(curves, "in_diff_ncurve_gamma", appConfig.inDiffNCurveGamma);
+
+	// ===== 新增：bath_setpoint =====
+	appConfig.bathSetEnabled = readB(bathSet, "enabled", appConfig.bathSetEnabled);
+	appConfig.bathSetTarget = readF(bathSet, "target", appConfig.bathSetTarget);
+	appConfig.bathSetHyst = readF(bathSet, "hyst", appConfig.bathSetHyst);
 
 	// —— 兜底默认，避免无配置时出现0或负值 ——
 	fillDefaultsIfNeeded(appConfig);
@@ -230,6 +244,12 @@ void printConfig(const AppConfig& cfg) {
 	Serial.println("Curves:");
 	Serial.printf("  in_diff_ncurve_gamma : %.2f\n", cfg.inDiffNCurveGamma);
 
+	// ===== 新增：bath_setpoint 打印 =====
+	Serial.println("Bath Setpoint:");
+	Serial.printf("  enabled              : %s\n", cfg.bathSetEnabled ? "true" : "false");
+	Serial.printf("  target               : %.2f °C\n", cfg.bathSetTarget);
+	Serial.printf("  hyst                 : %.2f °C\n", cfg.bathSetHyst);
+
 	Serial.println("---------------------");
 }
 
@@ -291,6 +311,7 @@ bool saveConfigToSPIFFS(const char* path) {
 	JsonObject pumpAdaptive = doc["pump_adaptive"].to<JsonObject>();
 	JsonObject pumpLearning = doc["pump_learning"].to<JsonObject>();
 	JsonObject curves = doc["curves"].to<JsonObject>();
+	JsonObject bathSet = doc["bath_setpoint"].to<JsonObject>();
 
 	safety["tank_temp_max"] = appConfig.tankTempMax;
 
@@ -308,6 +329,11 @@ bool saveConfigToSPIFFS(const char* path) {
 	pumpLearning["progress_min"] = appConfig.pumpProgressMin;
 
 	curves["in_diff_ncurve_gamma"] = appConfig.inDiffNCurveGamma;
+
+	// ===== 新增：bath_setpoint 保存 =====
+	bathSet["enabled"] = appConfig.bathSetEnabled;
+	bathSet["target"] = appConfig.bathSetTarget;
+	bathSet["hyst"] = appConfig.bathSetHyst;
 
 	bool ok = serializeJsonPretty(doc, file) > 0;
 	file.close();
