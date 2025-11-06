@@ -395,3 +395,44 @@
 * 本手册对应的源码已在 `config_manager.h/.cpp` 与 `main.cpp` 全面打通。
 
 ---
+附config.json 参数说明总表
+
+| 模块          | 字段路径                          | 类型            | 说明                      | 示例值                                 | 默认值      | 单位    | 可远程修改 |
+| :---------- | :---------------------------- | :------------ | :---------------------- | :---------------------------------- | :------- | :---- | :---- |
+| **WiFi 网络** | `wifi.ssid`                   | String        | Wi-Fi 网络名称（SSID）        | `Compostlab`                        | —        | —     | ✅     |
+|             | `wifi.password`               | String        | Wi-Fi 密码                | `znxk8888`                          | —        | —     | ✅     |
+| **MQTT 通信** | `mqtt.server`                 | String        | MQTT 服务器地址              | `118.25.108.254`                    | —        | —     | ✅     |
+|             | `mqtt.port`                   | UInt16        | MQTT 端口号                | `1883`                              | `1883`   | —     | ✅     |
+|             | `mqtt.user`                   | String        | 登录用户名                   | `equipment`                         | 空        | —     | ✅     |
+|             | `mqtt.pass`                   | String        | 登录密码                    | `ZNXK8888`                          | 空        | —     | ✅     |
+|             | `mqtt.clientId`               | String        | 客户端 ID（设备唯一标识）          | `cp500_006`                         | `cp500`  | —     | ✅     |
+|             | `mqtt.post_topic`             | String        | 上报数据主题                  | `compostlab/O5DGVbateN/post/data`   | —        | —     | ✅     |
+|             | `mqtt.response_topic`         | String        | 指令接收主题                  | `compostlab/O5DGVbateN/response`    | —        | —     | ✅     |
+| **数据字段映射**  | `keys.temp_in`                | String        | 堆体内部温度字段 Key            | `mqEGyxQVU56KPye`                   | —        | —     | ✅     |
+|             | `keys.temp_out[]`             | Array<String> | 外浴多探头字段 Key 列表          | `["wBsh...", "dD8H...", "E9Pv..."]` | —        | —     | ✅     |
+| **上传与时间同步** | `post_interval`               | UInt32        | 采集-控制-上报周期              | `60000`                             | `60000`  | `ms`  | ✅     |
+|             | `ntp_host[]`                  | Array<String> | NTP 时间服务器列表             | `ntp.aliyun.com` 等                  | 内置3个     | —     | ✅     |
+| **温度上下限**   | `temp_limitout_max`           | UInt32        | 外浴最高温限制（超限停热）           | `65`                                | `75`     | `℃`   | ✅     |
+|             | `temp_limitin_max`            | UInt32        | 堆体最高温（用于曲线归一化）          | `70`                                | `70`     | `℃`   | ✅     |
+|             | `temp_limitout_min`           | UInt32        | 外浴最低温（低于可强制加热）          | `25`                                | `25`     | `℃`   | ✅     |
+|             | `temp_limitin_min`            | UInt32        | 堆体最低温（低于不触发阈值）          | `25`                                | `25`     | `℃`   | ✅     |
+|             | `temp_maxdif`                 | UInt32        | 堆体与外浴的最大差阈（n-curve 基准）  | `5`                                 | `5`      | `℃`   | ✅     |
+| **设备信息**    | `equipment_key`               | String        | 设备唯一标识（与上位系统对应）         | `O5DGVbateN`                        | —        | —     | ✅     |
+| **外浴定置控温**  | `bath_setpoint.enabled`       | Bool          | 是否启用外浴定置控温模式            | `false`                             | `false`  | —     | ✅     |
+|             | `bath_setpoint.target`        | Float         | 外浴目标温度（中位温）             | `45.0`                              | `45.0`   | `℃`   | ✅     |
+|             | `bath_setpoint.hyst`          | Float         | 控温回差（防止抖动）              | `0.8`                               | `0.8`    | `℃`   | ✅     |
+| **曝气定时控制**  | `aeration_timer.enabled`      | Bool          | 是否启用定时曝气                | `true`                              | `false`  | —     | ✅     |
+|             | `aeration_timer.interval`     | UInt32        | 曝气间隔周期                  | `0`                                 | `600000` | `ms`  | ✅     |
+|             | `aeration_timer.duration`     | UInt32        | 每次曝气持续时长                | `60000000000`                       | `300000` | `ms`  | ✅     |
+| **安全保护**    | `safety.tank_temp_max`        | Float         | 水箱安全温度上限（超限停热）          | `90.0`                              | `90.0`   | `℃`   | ✅     |
+| **加热防抖参数**  | `heater_guard.min_on_ms`      | UInt32        | 加热器最小开机时长               | `30000`                             | `30000`  | `ms`  | ✅     |
+|             | `heater_guard.min_off_ms`     | UInt32        | 加热器最小关机时长               | `30000`                             | `30000`  | `ms`  | ✅     |
+| **水泵自适应控制** | `pump_adaptive.delta_on_min`  | Float         | Δ_on 低温下限（堆体低温时要求的热差）   | `6.0`                               | `6.0`    | `℃`   | ✅     |
+|             | `pump_adaptive.delta_on_max`  | Float         | Δ_on 高温上限（堆体高温时的热差要求）   | `30.0`                              | `25.0`   | `℃`   | ✅     |
+|             | `pump_adaptive.hyst_nom`      | Float         | 名义回差（用于推算 Δ_off）        | `3.0`                               | `3.0`    | `℃`   | ✅     |
+|             | `pump_adaptive.ncurve_gamma`  | Float         | n-curve 曲线指数（决定Δ变化曲线形状） | `1.3`                               | `1.3`    | —     | ✅     |
+| **水泵学习补偿**  | `pump_learning.step_up`       | Float         | 升温无效时 Δ_on 增加步长         | `0.5`                               | `0.5`    | `℃/次` | ✅     |
+|             | `pump_learning.step_down`     | Float         | 升温有效或非仅泵时阈值回落步长         | `0.2`                               | `0.2`    | `℃/次` | ✅     |
+|             | `pump_learning.max`           | Float         | 学习补偿最大值                 | `10.0`                              | `8.0`    | `℃`   | ✅     |
+|             | `pump_learning.progress_min`  | Float         | 判定“仅泵有效升温”的最小升温阈值       | `0.05`                              | `0.05`   | `℃`   | ✅     |
+| **差阈曲线特性**  | `curves.in_diff_ncurve_gamma` | Float         | 堆体温与差阈关系指数              | `2.0`                               | `2.0`    | —     | ✅     |
