@@ -29,12 +29,17 @@
 		"ntp.sjtu.edu.cn",
 		"202.120.2.101"
 	],
-	"temp_maxdif": 5,
+	"temp_maxdif": 8,
 	"temp_limitout_max": 65,
 	"temp_limitin_max": 70,
 	"temp_limitout_min": 25,
 	"temp_limitin_min": 25,
 	"equipment_key": "teEVTpuGbQ",
+	"bath_setpoint": {
+		"enabled": false,
+		"target": 45.0,
+		"hyst": 0.8
+	},
 	"aeration_timer": {
 		"enabled": true,
 		"interval": 300000,

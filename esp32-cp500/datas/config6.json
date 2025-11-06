@@ -35,6 +35,11 @@
 	"temp_limitout_min": 25,
 	"temp_limitin_min": 25,
 	"equipment_key": "O5DGVbateN",
+	"bath_setpoint": {
+		"enabled": false,
+		"target": 45.0,
+		"hyst": 0.8
+	},
 	"aeration_timer": {
 		"enabled": true,
 		"interval": 300000,
