@@ -140,7 +140,7 @@ float median(std::vector<float> values,
 static float gPumpDeltaBoost = 0.0f;  // 学习补偿（0..appConfig.pumpLearnMax）
 static float gLastToutMed = NAN;      // 上一轮 t_out 的中位温（用于判断仅泵是否带来升温）
 
-inline float lerp(float a, float b, float t) { return a + (b - a) * t; }
+inline float lerp_f(float a, float b, float t) { return a + (b - a) * t; }
 
 // 根据 t_in 在 [in_min, in_max] 的相对位置计算自适应 Δ_on / Δ_off（Δ_off 随 Δ_on 比例回差）
 static void computePumpDeltas(float t_in, float in_min, float in_max,
@@ -178,7 +178,7 @@ static void computePumpDeltas(float t_in, float in_min, float in_max,
 
   // 区间内：n-curve 平滑 + 学习补偿
   float u = (t_in - in_min) / (in_max - in_min);   // 0..1
-  float base_on = lerp(appConfig.pumpDeltaOnMin, appConfig.pumpDeltaOnMax, powf(u, appConfig.pumpNCurveGamma));
+  float base_on = lerp_f(appConfig.pumpDeltaOnMin, appConfig.pumpDeltaOnMax, powf(u, appConfig.pumpNCurveGamma));
 
   delta_on = clamp(base_on + gPumpDeltaBoost, appConfig.pumpDeltaOnMin, MAX_ALLOWED);
   delta_off = dyn_off(delta_on);
@@ -479,51 +479,59 @@ bool doMeasurementAndSave() {
 
   // ============= 新增：外浴层定置控温（Setpoint）模式（早返回） =============
   if (!hardCool && appConfig.bathSetEnabled) {
-    float tgt = appConfig.bathSetTarget;
-    float hyst = fmaxf(0.1f, appConfig.bathSetHyst);
-    if (isfinite(out_max)) tgt = fminf(tgt, out_max - 0.2f);   // 不顶死上限
+    float tgt = appConfig.bathSetTarget;   // 目标温度
+    float hyst = fmaxf(0.1f, appConfig.bathSetHyst);  // 回差（避免频繁开启/关闭）
+    if (isfinite(out_max)) tgt = fminf(tgt, out_max - 0.2f);   // 不顶死上限，避免过热
 
-    bool needHeat = false;
-    bool needPump = false;
-    String reason;
+    bool needHeat = false;   // 是否需要加热
+    bool needPump = false;   // 是否需要仅泵助热
+    String reason;           // 决策原因
 
-    // 死区控制
+    // 死区控制：外浴温度低于目标，进行加热或泵助热
     if (med_out < tgt - hyst) {
-      // 优先仅泵助热（省电）
-      if (tankValid && (delta_tank_out > DELTA_ON)) {
-        needPump = true;
+      // 外浴温度低于目标温度，优先加热水箱
+      if (tankValid && (t_tank < tgt + DELTA_ON)) {
+        needHeat = true;  // 优先加热水箱
         reason = String("[Setpoint] t_out_med=") + String(med_out, 1) +
-          " < (" + String(tgt, 1) + "-" + String(hyst, 1) + ") → 仅泵助热";
+          " < (" + String(tgt, 1) + "-" + String(hyst, 1) + ") → 优先加热水箱";
       }
       else {
-        needHeat = true;
-        reason = String("[Setpoint] t_out_med=") + String(med_out, 1) +
-          " < (" + String(tgt, 1) + "-" + String(hyst, 1) + ") → 加热";
+        // 水箱已足够热，考虑仅泵助热
+        if (tankValid && (delta_tank_out > DELTA_ON)) {
+          needPump = true;
+          reason = String("[Setpoint] t_out_med=") + String(med_out, 1) +
+            " < (" + String(tgt, 1) + "-" + String(hyst, 1) + ") → 仅泵助热";
+        }
+        else {
+          needHeat = true;  // 温差不够时使用加热器
+          reason = String("[Setpoint] t_out_med=") + String(med_out, 1) +
+            " < (" + String(tgt, 1) + "-" + String(hyst, 1) + ") → 加热";
+        }
       }
     }
     else if (med_out > tgt + hyst) {
-      // 过高：全停，自然冷却
+      // 外浴温度过高，停止加热和泵助热，进行冷却
       needHeat = false;
       needPump = false;
       reason = String("[Setpoint] t_out_med=") + String(med_out, 1) +
         " > (" + String(tgt, 1) + "+" + String(hyst, 1) + ") → 全停降温";
     }
     else {
-      // 死区：保持全停，避免抖动
+      // 外浴温度在目标范围内，保持当前状态
       needHeat = false;
       needPump = false;
       reason = String("[Setpoint] |t_out_med-") + String(tgt, 1) +
         "| ≤ " + String(hyst, 1) + " → 保持";
     }
 
-    // 手动锁优先
+    // 手动控制优先级（加热和泵的手动锁）
     unsigned long nowMs = millis();
     bool heaterManualActive = (heaterManualUntilMs != 0 && (long)(nowMs - heaterManualUntilMs) < 0);
     bool pumpManualActive = (pumpManualUntilMs != 0 && (long)(nowMs - pumpManualUntilMs) < 0);
     if (heaterManualActive) { needHeat = heaterIsOn; }
     if (pumpManualActive) { needPump = true; needHeat = false; reason += " | 手动泵锁生效"; }
 
-    // Tank 上限：强制停热
+    // 水箱温度过高，强制停热
     if (!tankValid || tankOver) {
       needHeat = false;
       reason += " | Tank≥上限/无读数：停热";
@@ -540,7 +548,7 @@ bool doMeasurementAndSave() {
       if (!pumpIsOn) { pumpOn();   pumpIsOn = true; }
     }
     else if (needHeat) {
-      if (pumpIsOn) { pumpOff();  pumpIsOn = false; }
+      if (pumpIsOn) { pumpOff(); pumpIsOn = false; }
       // 最小开/停机时间抑制
       bool canOpenHeat = true;
       if (!heaterIsOn && (nowMs2 - heaterToggleMs) < appConfig.heaterMinOffMs) canOpenHeat = false;
@@ -619,6 +627,8 @@ bool doMeasurementAndSave() {
 
     return ok; // ★ 早返回：setpoint 模式下不再执行 n-curve 分支
   }
+
+
 
   // ======================== 原 n-curve 控制逻辑 ========================
   bool bathWantHeat = false; // 是否希望补热（仅按当前 diff_now 与单阈值比较）

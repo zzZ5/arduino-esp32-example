@@ -1,3 +1,4 @@
+#include <Arduino.h>
 #include "sensor.h"
 #include <OneWire.h>
 #include <DallasTemperature.h>
@@ -5,39 +6,35 @@
 // ===================== DS18B20 总线/句柄 =====================
 static OneWire* oneWireIn = nullptr;
 static DallasTemperature* sensorIn = nullptr;
-static int                numInSensors = 0;
+static int numInSensors = 0;
 
 static OneWire* oneWireOut = nullptr;
 static DallasTemperature* sensorOut = nullptr;
-static int                numOutSensors = 0;
+static int numOutSensors = 0;
 
 // ===================== 控制引脚（数字输出 & PWM） =====================
-static int heaterPinGlobal = -1;   // 加热继电器/固态模块（数字开关）
-static int pumpPinGlobal = -1;   // 循环泵（数字开关）
+static int heaterPinGlobal = -1;     // 加热继电器/固态模块
+static int pumpPinGlobal = -1;       // 循环泵
 static int aerationPinGlobal = -1;   // 曝气 MOS 模块 PWM 输入
 
 // ===================== LEDC（ESP32 PWM）参数 =====================
-static const int  AERATION_LEDC_CHANNEL = 4;     // 避免与其他 LEDC 通道冲突
-static const int  AERATION_LEDC_FREQ_HZ = 1000;  // 1kHz，适合 D4184 等
+static const int  AERATION_LEDC_FREQ_HZ = 1000;   // 1kHz，适合 D4184 等
 static const int  AERATION_LEDC_RES_BITS = 10;    // 10bit: 0..1023
+static int aerationChannel = -1;                  // 新版自动分配通道
 
-// ===================== 曝气运行参数（可运行期配置） =====================
+// ===================== 曝气运行参数 =====================
 static int g_aerCurrentDutyPct = 0;   // 当前占空 0~100
-static int g_aerMaxDutyPct = 100; // 上限（防止电源过载）
-
-// 软启动 / 软停止时长（毫秒）
-static int g_softOnMs = 1200;
-static int g_softOffMs = 800;
-
-// 起动脉冲（克服静摩擦，可选）
-static int g_kickPct = 0;   // 0=不用；否则 10~100
-static int g_kickMs = 0;   // 脉冲持续时间（ms）
+static int g_aerMaxDutyPct = 100;     // 上限（防止电源过载）
+static int g_softOnMs = 1200;         // 软启动时间
+static int g_softOffMs = 800;         // 软停止时间
+static int g_kickPct = 0;             // 起动脉冲占空比
+static int g_kickMs = 0;              // 起动脉冲持续时间
 
 // ============================================================================
 //                                  初始化
 // ============================================================================
 bool initSensors(int tempInPin, int tempOutPin, int heaterPin, int pumpPin, int aerationPin) {
-	// 内总线（比如 GPIO4）
+	// 内总线（例如 GPIO4）
 	oneWireIn = new OneWire(tempInPin);
 	sensorIn = new DallasTemperature(oneWireIn);
 	sensorIn->begin();
@@ -45,7 +42,7 @@ bool initSensors(int tempInPin, int tempOutPin, int heaterPin, int pumpPin, int 
 	numInSensors = sensorIn->getDeviceCount();
 	Serial.printf("[TempIn] Found %d sensors\n", numInSensors);
 
-	// 外总线（比如 GPIO5）
+	// 外总线（例如 GPIO5）
 	oneWireOut = new OneWire(tempOutPin);
 	sensorOut = new DallasTemperature(oneWireOut);
 	sensorOut->begin();
@@ -53,19 +50,18 @@ bool initSensors(int tempInPin, int tempOutPin, int heaterPin, int pumpPin, int 
 	numOutSensors = sensorOut->getDeviceCount();
 	Serial.printf("[TempOut] Found %d sensors\n", numOutSensors);
 
-	// 控制引脚
+	// 控制引脚初始化
 	heaterPinGlobal = heaterPin;
 	pumpPinGlobal = pumpPin;
 	aerationPinGlobal = aerationPin;
 
 	if (heaterPinGlobal >= 0) { pinMode(heaterPinGlobal, OUTPUT); digitalWrite(heaterPinGlobal, LOW); }
-	if (pumpPinGlobal >= 0) { pinMode(pumpPinGlobal, OUTPUT); digitalWrite(pumpPinGlobal, LOW); }
+	if (pumpPinGlobal >= 0) { pinMode(pumpPinGlobal, OUTPUT);   digitalWrite(pumpPinGlobal, LOW); }
 
-	// 曝气 PWM 初始化（LEDC）
+	// 曝气 PWM 初始化（新版 LEDC 接口）
 	if (aerationPinGlobal >= 0) {
-		ledcSetup(AERATION_LEDC_CHANNEL, AERATION_LEDC_FREQ_HZ, AERATION_LEDC_RES_BITS);
-		ledcAttachPin(aerationPinGlobal, AERATION_LEDC_CHANNEL);
-		ledcWrite(AERATION_LEDC_CHANNEL, 0); // 安全态
+		aerationChannel = ledcAttach(aerationPinGlobal, AERATION_LEDC_FREQ_HZ, AERATION_LEDC_RES_BITS);
+		ledcWrite(aerationChannel, 0);  // 初始安全态
 		g_aerCurrentDutyPct = 0;
 		Serial.println("[Aeration] Mode=PWM (soft start/stop embedded)");
 	}
@@ -113,8 +109,8 @@ std::vector<float> readTempOut() {
 // ============================================================================
 void heaterOn() { if (heaterPinGlobal >= 0) { digitalWrite(heaterPinGlobal, HIGH); Serial.println("[Heater] ON"); } }
 void heaterOff() { if (heaterPinGlobal >= 0) { digitalWrite(heaterPinGlobal, LOW);  Serial.println("[Heater] OFF"); } }
-void pumpOn() { if (pumpPinGlobal >= 0) { digitalWrite(pumpPinGlobal, HIGH); Serial.println("[Pump] ON"); } }
-void pumpOff() { if (pumpPinGlobal >= 0) { digitalWrite(pumpPinGlobal, LOW);  Serial.println("[Pump] OFF"); } }
+void pumpOn() { if (pumpPinGlobal >= 0) { digitalWrite(pumpPinGlobal, HIGH);   Serial.println("[Pump] ON"); } }
+void pumpOff() { if (pumpPinGlobal >= 0) { digitalWrite(pumpPinGlobal, LOW);    Serial.println("[Pump] OFF"); } }
 
 // ============================================================================
 //                              曝气（PWM，内置软启停）
@@ -128,15 +124,15 @@ static inline int pctToDuty(int pct) {
 
 static inline void writeDutyPctImmediate(int pct) {
 	if (pct < 0) pct = 0;
-	if (pct > g_aerMaxDutyPct) pct = g_aerMaxDutyPct;    // 施加占空上限
+	if (pct > g_aerMaxDutyPct) pct = g_aerMaxDutyPct;
 	g_aerCurrentDutyPct = pct;
-	ledcWrite(AERATION_LEDC_CHANNEL, pctToDuty(pct));
+	if (aerationChannel >= 0) ledcWrite(aerationChannel, pctToDuty(pct));
 }
 
 bool aerationIsActive() { return g_aerCurrentDutyPct > 0; }
 
 void aerationSetDutyPct(int pct) {
-	writeDutyPctImmediate(pct);                           // 硬切，无软启动
+	writeDutyPctImmediate(pct);
 	Serial.printf("[Aeration] duty=%d%% (hard)\n", g_aerCurrentDutyPct);
 }
 
@@ -157,7 +153,7 @@ void aerationConfigSoft(int onMs, int offMs, int kickPct, int kickMs) {
 		g_softOnMs, g_softOffMs, g_kickPct, g_kickMs);
 }
 
-// 软启动到 100%（或 MaxDuty）
+// 软启动到目标占空比
 void aerationOn() {
 	const int target = g_aerMaxDutyPct;
 	int from = g_aerCurrentDutyPct;
@@ -186,7 +182,7 @@ void aerationOn() {
 		while (pct != to) {
 			writeDutyPctImmediate(pct);
 			pct += dir;
-			while ((millis() - last) < (unsigned long)stepDelay) { delay(1); }
+			while ((millis() - last) < (unsigned long)stepDelay) delay(1);
 			last += stepDelay;
 		}
 		writeDutyPctImmediate(to);
@@ -206,13 +202,13 @@ void aerationOff() {
 		int steps = abs(from - to);
 		int stepDelay = g_softOffMs / steps;
 		if (stepDelay <= 0) stepDelay = 1;
-		int dir = (to > from) ? 1 : -1; // 实际 -1
+		int dir = (to > from) ? 1 : -1;
 		unsigned long last = millis();
 		int pct = from;
 		while (pct != to) {
 			writeDutyPctImmediate(pct);
 			pct += dir;
-			while ((millis() - last) < (unsigned long)stepDelay) { delay(1); }
+			while ((millis() - last) < (unsigned long)stepDelay) delay(1);
 			last += stepDelay;
 		}
 		writeDutyPctImmediate(0);

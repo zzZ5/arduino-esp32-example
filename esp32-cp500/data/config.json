@@ -8,16 +8,16 @@
     "port": 1883,
     "user": "equipment",
     "pass": "ZNXK8888",
-    "clientId": "cp500_006",
-    "post_topic": "compostlab/O5DGVbateN/post/data",
-    "response_topic": "compostlab/O5DGVbateN/response"
+    "clientId": "cp500_007",
+    "post_topic": "compostlab/teEVTpuGbQ/post/data",
+    "response_topic": "compostlab/teEVTpuGbQ/response"
   },
   "keys": {
-    "temp_in": "mqEGyxQVU56KPye",
+    "temp_in": "OpYeXWdh6hLBfQA",
     "temp_out": [
-      "wBshNTETXYHbTXE",
-      "dD8Hv9dOn0I8cFC",
-      "E9Pvk6dC0RRrZJq"
+      "fY72AARXrvIuxBP",
+      "JX0wxbNJvVaGc9j",
+      "qWvPYCUoRrsPgLD"
     ]
   },
   "post_interval": 60000,
@@ -29,21 +29,21 @@
     "ntp.sjtu.edu.cn",
     "202.120.2.101"
   ],
-  "temp_maxdif": 5,
+  "temp_maxdif": 8,
   "temp_limitout_max": 65,
   "temp_limitin_max": 70,
   "temp_limitout_min": 25,
   "temp_limitin_min": 25,
-  "equipment_key": "O5DGVbateN",
+  "equipment_key": "teEVTpuGbQ",
   "bath_setpoint": {
-    "enabled": false,
-    "target": 45.0,
+    "enabled": true,
+    "target": 65.0,
     "hyst": 0.8
   },
   "aeration_timer": {
     "enabled": true,
-    "interval": 0,
-    "duration": 60000000000
+    "interval": 300000,
+    "duration": 300000
   },
   "safety": {
     "tank_temp_max": 90.0
