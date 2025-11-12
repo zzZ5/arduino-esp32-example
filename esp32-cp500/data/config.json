@@ -54,7 +54,7 @@
   },
   "pump_adaptive": {
     "delta_on_min": 6.0,
-    "delta_on_max": 30.0,
+    "delta_on_max": 25.0,
     "hyst_nom": 3.0,
     "ncurve_gamma": 1.3
   },

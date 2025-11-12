@@ -428,82 +428,10 @@ void checkAndControlAerationByTimer() {
   }
 }
 
-// ========================= 执行控制动作 =========================
-void executeControlActions(bool needHeat, bool needPump, String& reason) {
-  unsigned long nowMs = millis();
-  if (needPump) {
-    if (heaterIsOn) { heaterOff(); heaterIsOn = false; heaterToggleMs = nowMs; }
-    if (!pumpIsOn) { pumpOn();   pumpIsOn = true; }
-  }
-  else if (needHeat) {
-    if (pumpIsOn) { pumpOff(); pumpIsOn = false; }
-    bool canOpenHeat = true;
-    if (!heaterIsOn && (nowMs - heaterToggleMs) < appConfig.heaterMinOffMs) canOpenHeat = false;
-    if (canOpenHeat && !heaterIsOn) { heaterOn(); heaterIsOn = true; heaterToggleMs = nowMs; }
-  }
-  else {
-    if (heaterIsOn) { heaterOff(); heaterIsOn = false; heaterToggleMs = nowMs; }
-    if (pumpIsOn) { pumpOff();  pumpIsOn = false; }
-  }
-}
-
-// ========================= 上报数据 =========================
-void reportData(const String& ts, float med_out, float t_in, float t_tank,
-  float delta_tank_in, float delta_tank_out, const String& reason,
-  float tgt, float hyst, bool tankValid) {
-
-  StaticJsonDocument<2048> doc;
-  JsonArray data = doc.createNestedArray("data");
-
-  JsonObject obj_in = data.createNestedObject();
-  obj_in["key"] = appConfig.keyTempIn;
-  obj_in["value"] = t_in;
-  obj_in["measured_time"] = ts;
-
-  JsonObject obj_out = data.createNestedObject();
-  obj_out["key"] = appConfig.keyTempOut[0];
-  obj_out["value"] = med_out;
-  obj_out["measured_time"] = ts;
-
-  // 使用 tankValid 参数来检查水箱有效性
-  if (tankValid) {
-    doc["info"]["tank_temp"] = t_tank;
-    doc["info"]["tank_in_delta"] = delta_tank_in;
-    doc["info"]["tank_out_delta"] = delta_tank_out;
-  }
-  else {
-    doc["info"]["tank_temp"] = nullptr;
-    doc["info"]["tank_in_delta"] = nullptr;
-    doc["info"]["tank_out_delta"] = nullptr;
-  }
-
-  doc["info"]["mode"] = (tgt > 0 ? "setpoint" : "ncurve");
-  doc["info"]["msg"] = reason;
-  doc["info"]["heat"] = heaterIsOn;
-  doc["info"]["pump"] = pumpIsOn;
-  doc["info"]["aeration"] = aerationIsOn;
-
-  if (tgt > 0) {
-    doc["info"]["setpoint"] = tgt;
-    doc["info"]["set_hyst"] = hyst;
-  }
-
-  String payload;
-  serializeJson(doc, payload);
-  bool ok = publishData(appConfig.mqttPostTopic, payload, 10000);
-  if (ok) {
-    if (preferences.begin(NVS_NAMESPACE, false)) {
-      preferences.putULong(NVS_KEY_LAST_MEAS, time(nullptr));
-      preferences.end();
-    }
-  }
-}
-
 // ========================= 主测量 + 控制 + 上报 =========================
 bool doMeasurementAndSave() {
   Serial.println("[Measure] 采集温度");
 
-  // 获取传感器数据
   float t_in = readTempIn();                   // 核心温度（内部）
   std::vector<float> t_outs = readTempOut();   // 外浴多个探头
   float t_tank = readTempTank();               // 水箱温度（用于控制与上报 info）
@@ -520,8 +448,8 @@ bool doMeasurementAndSave() {
   }
 
   // 水箱温度有效性与上限
-  bool tankValid = !isnan(t_tank) && (t_tank > -10.0f) && (t_tank < 120.0f);
-  bool tankOver = tankValid && (t_tank >= appConfig.tankTempMax);
+  bool  tankValid = !isnan(t_tank) && (t_tank > -10.0f) && (t_tank < 120.0f);
+  bool  tankOver = tankValid && (t_tank >= appConfig.tankTempMax);
   float delta_tank_in = tankValid ? (t_tank - t_in) : 0.0f;   // 水箱-内温热差（上报）
   float delta_tank_out = tankValid ? (t_tank - med_out) : 0.0f;   // 水箱-外浴热差（用于仅泵）
 
@@ -537,7 +465,7 @@ bool doMeasurementAndSave() {
   float diff_now = t_in - med_out;
 
   // ---- 外浴硬保护 ----
-  bool hardCool = false;
+  bool   hardCool = false;
   String msg;
   if (med_out >= out_max) {
     hardCool = true;
@@ -549,13 +477,10 @@ bool doMeasurementAndSave() {
   float DELTA_ON = 0.0f, DELTA_OFF = 0.0f;
   computePumpDeltas(t_in, in_min, in_max, DELTA_ON, DELTA_OFF);
 
-  // ========================= [Setpoint] 模式 =========================
+  // ============= 新增：外浴层定置控温（Setpoint）模式（早返回） =============
   if (!hardCool && appConfig.bathSetEnabled) {
-    // Setpoint 模式控制逻辑
     float tgt = appConfig.bathSetTarget;   // 目标温度
     float hyst = fmaxf(0.1f, appConfig.bathSetHyst);  // 回差（避免频繁开启/关闭）
-
-    // 目标温度硬保护：确保不会超过上限
     if (isfinite(out_max)) tgt = fminf(tgt, out_max - 0.2f);   // 不顶死上限，避免过热
 
     bool needHeat = false;   // 是否需要加热
@@ -599,7 +524,18 @@ bool doMeasurementAndSave() {
         "| ≤ " + String(hyst, 1) + " → 保持";
     }
 
-    // 处理手动控制优先级
+    // 动态调整 boost（学习补偿）
+    if (needPump) {
+      // 根据水箱温差调整 boost，增大或减小泵的效果
+      if (delta_tank_out < DELTA_ON) {
+        gPumpDeltaBoost = fmaxf(0.0f, gPumpDeltaBoost - appConfig.pumpLearnStepDown);  // 温差小，减小 boost
+      }
+      else if (delta_tank_out > DELTA_ON) {
+        gPumpDeltaBoost = fminf(appConfig.pumpLearnMax, gPumpDeltaBoost + appConfig.pumpLearnStepUp);  // 温差大，增加 boost
+      }
+    }
+
+    // 手动控制优先级（加热和泵的手动锁）
     unsigned long nowMs = millis();
     bool heaterManualActive = (heaterManualUntilMs != 0 && (long)(nowMs - heaterManualUntilMs) < 0);
     bool pumpManualActive = (pumpManualUntilMs != 0 && (long)(nowMs - pumpManualUntilMs) < 0);
@@ -616,16 +552,97 @@ bool doMeasurementAndSave() {
       }
     }
 
-    // 执行动作（互斥控制：加热和泵不同时运行）
-    executeControlActions(needHeat, needPump, reason);
+    // ---- 执行动作（互斥）----
+    unsigned long nowMs2 = millis();
+    if (needPump) {
+      if (heaterIsOn) { heaterOff(); heaterIsOn = false; heaterToggleMs = nowMs2; }
+      if (!pumpIsOn) { pumpOn();   pumpIsOn = true; }
+    }
+    else if (needHeat) {
+      if (pumpIsOn) { pumpOff(); pumpIsOn = false; }
+      // 最小开/停机时间抑制
+      bool canOpenHeat = true;
+      if (!heaterIsOn && (nowMs2 - heaterToggleMs) < appConfig.heaterMinOffMs) canOpenHeat = false;
+      if (canOpenHeat && !heaterIsOn) { heaterOn(); heaterIsOn = true; heaterToggleMs = nowMs2; }
+      if (!canOpenHeat) reason += " | 抑制开热：未到最小关断间隔";
+    }
+    else {
+      if (heaterIsOn) { heaterOff(); heaterIsOn = false; heaterToggleMs = nowMs2; }
+      if (pumpIsOn) { pumpOff();  pumpIsOn = false; }
+    }
 
-    // 上报数据
-    reportData(ts, med_out, t_in, t_tank, delta_tank_in, delta_tank_out, reason, tgt, hyst, tankValid);
+    // ===== 定时曝气 =====
+    checkAndControlAerationByTimer();
 
-    return true;  // [Setpoint] 模式处理完成，返回
+    // ===== 上报 =====
+    StaticJsonDocument<2048> doc; // 容量可按探头数量上调
+    JsonArray data = doc.createNestedArray("data");
+
+    JsonObject obj_in = data.createNestedObject();
+    obj_in["key"] = appConfig.keyTempIn;
+    obj_in["value"] = t_in;
+    obj_in["measured_time"] = ts;
+
+    for (size_t i = 0; i < t_outs.size(); ++i) {
+      JsonObject obj = data.createNestedObject();
+      if (i < appConfig.keyTempOut.size())      obj["key"] = appConfig.keyTempOut[i];
+      else if (!appConfig.keyTempOut.empty())   obj["key"] = appConfig.keyTempOut[0] + String("_X") + String(i);
+      else                                      obj["key"] = String("temp_out_") + String(i);
+      obj["value"] = t_outs[i];
+      obj["measured_time"] = ts;
+    }
+
+    if (tankValid) {
+      doc["info"]["tank_temp"] = t_tank;
+      doc["info"]["tank_in_delta"] = delta_tank_in;
+      doc["info"]["tank_out_delta"] = delta_tank_out;
+    }
+    else {
+      doc["info"]["tank_temp"] = nullptr;
+      doc["info"]["tank_in_delta"] = nullptr;
+      doc["info"]["tank_out_delta"] = nullptr;
+    }
+    doc["info"]["tank_over"] = tankOver;
+
+    // 模式标识 & 目标
+    doc["info"]["mode"] = "setpoint";
+    doc["info"]["setpoint"] = tgt;
+    doc["info"]["set_hyst"] = hyst;
+
+    // 复用 msg 格式
+    String brief = reason +
+      String(" | Δ_on=") + String(DELTA_ON, 1) +
+      String(", Δ_off=") + String(DELTA_OFF, 1) +
+      String(", boost=") + String(gPumpDeltaBoost, 1) +
+      String(" | t_in=") + String(t_in, 1) +
+      String(", t_out_med=") + String(med_out, 1);
+    if (brief.length() > 300) brief = brief.substring(0, 300);
+    doc["info"]["msg"] = brief;
+
+    doc["info"]["heat"] = heaterIsOn;
+    doc["info"]["pump"] = pumpIsOn;
+    doc["info"]["aeration"] = aerationIsOn;
+
+    String payload;
+    serializeJson(doc, payload);
+    bool ok = publishData(appConfig.mqttPostTopic, payload, 10000);
+    if (ok) {
+      if (preferences.begin(NVS_NAMESPACE, false)) {
+        preferences.putULong(NVS_KEY_LAST_MEAS, nowEpoch);
+        preferences.end();
+      }
+    }
+
+    // [ADAPTIVE_TOUT] 记录本轮 t_out_med
+    gLastToutMed = med_out;
+
+    return ok; // ★ 早返回：setpoint 模式下不再执行 n-curve 分支
   }
 
-  // ========================= [n-curve] 模式 =========================
+
+
+
+  // ======================== 原 n-curve 控制逻辑 ========================
   bool bathWantHeat = false; // 是否希望补热（仅按当前 diff_now 与单阈值比较）
   bool needHeat = false;     // 保证“随时可泵助热”的预热
   bool needPump = false;     // 满足仅泵助热条件时启动水泵（与加热互斥）
@@ -681,16 +698,168 @@ bool doMeasurementAndSave() {
       }
     }
 
-    // 执行动作（互斥控制：加热和泵不同时运行）
-    executeControlActions(needHeat, needPump, reason);
+    // 若当前不泵，则优先把水箱加热到 Δ_out ≥ Δ_on（保证随时可泵助热）
+    if (tankValid && !bathWantHeat && !heaterManualActive && !tankOver && (delta_tank_out < DELTA_ON)) {
+      needHeat = true;
+      needPump = false;
+      reason += " | tankΔ=" + String(delta_tank_out, 1) +
+        "℃ < Δ_on=" + String(DELTA_ON, 1) + "℃ → 加热";
+    }
 
-    // 上报数据
-    reportData(ts, med_out, t_in, t_tank, delta_tank_in, delta_tank_out, reason, NAN, NAN, tankValid);
+    // ---- 泵助热 vs 加热（以 Δ_out 的 Δ_on/Δ_off 判据；泵侧回差保留）----
+    if (tankValid && bathWantHeat && !heaterManualActive && !pumpManualActive && !tankOver) {
+      if (pumpIsOn) {
+        if (delta_tank_out < DELTA_OFF) {
+          needPump = false;
+          needHeat = true;
+          reason += String(" | tankΔ=") + String(delta_tank_out, 1) +
+            "℃ < Δ_off=" + String(DELTA_OFF, 1) + "℃ → 退出仅泵，加热";
+        }
+        else {
+          needPump = true;
+          needHeat = false;
+          reason += String(" | tankΔ=") + String(delta_tank_out, 1) +
+            "℃ ≥ Δ_off=" + String(DELTA_OFF, 1) + "℃ → 保持仅泵";
+        }
+      }
+      else {
+        if (delta_tank_out > DELTA_ON) {
+          needPump = true;
+          needHeat = false;
+          reason += String(" | tankΔ=") + String(delta_tank_out, 1) +
+            "℃ > Δ_on=" + String(DELTA_ON, 1) + "℃ → 进入仅泵";
+        }
+        else {
+          needPump = false;
+          needHeat = true;
+          reason += String(" | tankΔ=") + String(delta_tank_out, 1) +
+            "℃ ≤ Δ_on=" + String(DELTA_ON, 1) + "℃ → 加热";
+        }
+      }
+    }
+    else {
+      needPump = false;
+      // needHeat 保持由前面逻辑决定
+    }
+
+    // 最小开/停机时间抑制（水箱过温或仅泵助热时跳过抑制）
+    bool skipMinTime = tankOver || needPump;
+    if (!skipMinTime) {
+      if (bathWantHeat && !heaterIsOn && (nowMs - heaterToggleMs) < appConfig.heaterMinOffMs) {
+        needHeat = false;  // 抑制新开热
+        reason += " | 抑制(needHeat)：未到最小关断间隔";
+      }
+      if (!bathWantHeat && heaterIsOn && (nowMs - heaterToggleMs) < appConfig.heaterMinOnMs) {
+        bathWantHeat = true;  // 维持已开热
+        reason += " | 维持(needHeat)：未到最小开机间隔";
+      }
+    }
+  } // end !hardCool
+
+  // [ADAPTIVE_TOUT] —— 学习补偿：如果“仅泵”不带来 t_out 升温，就逐步提高阈值 —— 
+  if (needPump || pumpIsOn) {
+    if (!isnan(gLastToutMed)) {
+      float dT_out = med_out - gLastToutMed;
+      if (dT_out < appConfig.pumpProgressMin) {
+        gPumpDeltaBoost = fminf(appConfig.pumpLearnMax, gPumpDeltaBoost + appConfig.pumpLearnStepUp);   // 仅泵无效→抬高阈值
+      }
+      else {
+        gPumpDeltaBoost = fmaxf(0.0f, gPumpDeltaBoost - appConfig.pumpLearnStepDown);                   // 仅泵有效→缓慢回落
+      }
+    }
+  }
+  else {
+    gPumpDeltaBoost = fmaxf(0.0f, gPumpDeltaBoost - appConfig.pumpLearnStepDown);
   }
 
-  return true;
-}
+  // ---- 执行动作（互斥：泵与加热绝不同时运行）----
+  unsigned long nowMs2 = millis();
+  if (hardCool) {
+    if (heaterIsOn) { heaterOff(); heaterIsOn = false; heaterToggleMs = nowMs2; }
+    if (pumpIsOn) { pumpOff();   pumpIsOn = false; }
+    pumpManualUntilMs = 0; // 清软锁
+    heaterManualUntilMs = 0; // 清加热软锁（硬保护优先）
+  }
+  else {
+    if (needPump) {
+      if (heaterIsOn) { heaterOff(); heaterIsOn = false; heaterToggleMs = nowMs2; }
+      if (!pumpIsOn) { pumpOn();   pumpIsOn = true; }
+    }
+    else if (needHeat || bathWantHeat) {
+      if (pumpIsOn) { pumpOff();  pumpIsOn = false; }
+      if (!heaterIsOn) { heaterOn(); heaterIsOn = true; heaterToggleMs = nowMs2; }
+    }
+    else {
+      if (heaterIsOn) { heaterOff(); heaterIsOn = false; heaterToggleMs = nowMs2; }
+      if (pumpIsOn) { pumpOff();  pumpIsOn = false; }
+    }
+  }
 
+  // ===== 定时曝气 =====
+  checkAndControlAerationByTimer();
+
+  // ===== 上报（n-curve 模式）=====
+  StaticJsonDocument<1536> doc; // 如探头多可上调
+  JsonArray data = doc.createNestedArray("data");
+
+  JsonObject obj_in = data.createNestedObject();
+  obj_in["key"] = appConfig.keyTempIn;
+  obj_in["value"] = t_in;
+  obj_in["measured_time"] = ts;
+
+  for (size_t i = 0; i < t_outs.size(); ++i) {
+    JsonObject obj = data.createNestedObject();
+    if (i < appConfig.keyTempOut.size())      obj["key"] = appConfig.keyTempOut[i];
+    else if (!appConfig.keyTempOut.empty())   obj["key"] = appConfig.keyTempOut[0] + String("_X") + String(i);
+    else                                      obj["key"] = String("temp_out_") + String(i);
+    obj["value"] = t_outs[i];
+    obj["measured_time"] = ts;
+  }
+
+  if (tankValid) {
+    doc["info"]["tank_temp"] = t_tank;
+    doc["info"]["tank_in_delta"] = delta_tank_in;
+    doc["info"]["tank_out_delta"] = delta_tank_out;
+  }
+  else {
+    doc["info"]["tank_temp"] = nullptr;
+    doc["info"]["tank_in_delta"] = nullptr;
+    doc["info"]["tank_out_delta"] = nullptr;
+  }
+  doc["info"]["tank_over"] = tankOver;
+
+  // 模式标识（n-curve）
+  doc["info"]["mode"] = "ncurve";
+
+  doc["info"]["msg"] =
+    (hardCool ? msg :
+      (String("[Heat-nCurve] ") + reason +
+        String(" | Δ_on=") + String(DELTA_ON, 1) +
+        String(", Δ_off=") + String(DELTA_OFF, 1) +
+        String(", boost=") + String(gPumpDeltaBoost, 1) +
+        String(" | t_in=") + String(t_in, 1) +
+        String(", t_out_med=") + String(med_out, 1) +
+        String(", diff=") + String(diff_now, 1)));
+
+  doc["info"]["heat"] = heaterIsOn;
+  doc["info"]["pump"] = pumpIsOn;
+  doc["info"]["aeration"] = aerationIsOn;
+
+  String payload;
+  serializeJson(doc, payload);
+  bool ok = publishData(appConfig.mqttPostTopic, payload, 10000);
+  if (ok) {
+    if (preferences.begin(NVS_NAMESPACE, false)) {
+      preferences.putULong(NVS_KEY_LAST_MEAS, nowEpoch);
+      preferences.end();
+    }
+  }
+
+  // [ADAPTIVE_TOUT] 记录本轮 t_out_med
+  gLastToutMed = med_out;
+
+  return ok;
+}
 
 // ========================= 测量任务 =========================
 void measurementTask(void* pv) {
