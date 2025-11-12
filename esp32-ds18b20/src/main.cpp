@@ -22,14 +22,6 @@ static const char* NVS_NAMESPACE = "temps";
 static const char* NVS_KEY_LAST_MEAS = "lastMeas";
 static unsigned long prevMeasureMs = 0;
 
-static String getTimeString() {
-  time_t now = time(nullptr);
-  struct tm* tm_info = localtime(&now);
-  char buffer[32];
-  strftime(buffer, sizeof(buffer), "%Y-%m-%d %H:%M:%S", tm_info);
-  return String(buffer);
-}
-
 // ========== 远程配置更新 ==========
 static bool updateAppConfigFromJson(JsonObject obj) {
   if (obj.containsKey("wifi")) {
@@ -101,46 +93,63 @@ static void mqttCallback(char* topic, byte* payload, unsigned int length) {
 
 // ========== 采集 + 上报 ==========
 static bool doMeasurementAndPost() {
+  // 读取两路
   std::vector<float> t4 = readTemps4();
   std::vector<float> t5 = readTemps5();
+
   if (t4.empty() && t5.empty()) {
     Serial.println("[Measure] no temps on both buses");
     return false;
   }
 
+  // 合并读数，顺序：先 GPIO4 后 GPIO5
+  std::vector<float> temps;
+  temps.reserve(t4.size() + t5.size());
+  temps.insert(temps.end(), t4.begin(), t4.end());
+  temps.insert(temps.end(), t5.begin(), t5.end());
+
+  // 生成对应 key 列表：优先 keys.temp；否则 temp4 + temp5 依次拼接
+  std::vector<String> keys;
+  if (!appConfig.keyTemp4.empty() && appConfig.keyTemp5.empty() && appConfig.keyTemp4.size() != temps.size()) {
+    // 兼容旧配置：如果用户只给了 "temp"（在 loadConfig 时我们映射到了 keyTemp4）
+    // 这里直接用 keyTemp4 当作整套 key
+    keys = appConfig.keyTemp4;
+  }
+  else {
+    keys.reserve(appConfig.keyTemp4.size() + appConfig.keyTemp5.size());
+    keys.insert(keys.end(), appConfig.keyTemp4.begin(), appConfig.keyTemp4.end());
+    keys.insert(keys.end(), appConfig.keyTemp5.begin(), appConfig.keyTemp5.end());
+  }
+
+  // 对齐数量：只发送“有 key 的读数”
+  size_t n = min(temps.size(), keys.size());
+  if (n == 0) {
+    Serial.println("[Measure] no matching keys for temps");
+    return false;
+  }
+  if (temps.size() != keys.size()) {
+    Serial.printf("[Measure] WARN: temps=%u keys=%u -> will post %u items\n",
+      (unsigned)temps.size(), (unsigned)keys.size(), (unsigned)n);
+  }
+
   String ts = getTimeString();
+
+  // 构建 payload（注意：顶层不放 device；data 只能 {key,value,measured_time}）
   StaticJsonDocument<4096> doc;
-
-  // ✅ 顶层添加设备标识
-  doc["device"] = appConfig.equipmentKey;
-  doc["timestamp"] = ts;
-
   JsonArray data = doc.createNestedArray("data");
 
-  // GPIO4
-  for (size_t i = 0; i < t4.size(); ++i) {
+  for (size_t i = 0; i < n; ++i) {
     JsonObject obj = data.createNestedObject();
-    obj["key"] = "temp";
-    obj["id"] = (i < appConfig.keyTemp4.size()) ? appConfig.keyTemp4[i] : String("temp4_") + String(i);
-    obj["bus"] = 4;
-    obj["value"] = t4[i];
-    obj["measured_time"] = ts;
+    obj["key"] = keys[i];        // ✅ 必须是服务器那套 key（例如 "OpYeXW..."）
+    obj["value"] = temps[i];
+    obj["measured_time"] = ts;   // ✅ 字段名固定
   }
 
-  // GPIO5
-  for (size_t i = 0; i < t5.size(); ++i) {
-    JsonObject obj = data.createNestedObject();
-    obj["key"] = "temp";
-    obj["id"] = (i < appConfig.keyTemp5.size()) ? appConfig.keyTemp5[i] : String("temp5_") + String(i);
-    obj["bus"] = 5;
-    obj["value"] = t5[i];
-    obj["measured_time"] = ts;
-  }
-
+  // info 可扩展，放设备编号等
   JsonObject info = doc.createNestedObject("info");
-  info["count4"] = t4.size();
-  info["count5"] = t5.size();
-  info["device"] = appConfig.equipmentKey;
+  info["device"] = appConfig.equipmentKey;  // ✅ 放在 info 里
+  info["count4"] = (uint32_t)t4.size();
+  info["count5"] = (uint32_t)t5.size();
   info["timestamp"] = ts;
 
   String payload;
@@ -149,13 +158,15 @@ static bool doMeasurementAndPost() {
 
   bool ok = publishData(appConfig.mqttPostTopic, payload, 10000);
   if (ok) {
-    if (preferences.begin(NVS_NAMESPACE, false)) {
-      preferences.putULong(NVS_KEY_LAST_MEAS, time(nullptr));
+    Preferences preferences;
+    if (preferences.begin("temps", false)) {
+      preferences.putULong("lastMeas", time(nullptr));
       preferences.end();
     }
   }
   return ok;
 }
+
 
 // ========== 后台测量任务 ==========
 static void measurementTask(void* pv) {
