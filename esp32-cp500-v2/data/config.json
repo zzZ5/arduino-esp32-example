@@ -29,7 +29,7 @@
     "ntp.sjtu.edu.cn",
     "202.120.2.101"
   ],
-  "temp_maxdif": 8,
+  "temp_maxdif": 13,
   "temp_limitout_max": 65,
   "temp_limitin_max": 70,
   "temp_limitout_min": 25,
@@ -62,7 +62,7 @@
     "step_up": 0.5,
     "step_down": 0.2,
     "max": 10.0,
-    "progress_min": 0.00
+    "progress_min": 0.05
   },
   "curves": {
     "in_diff_ncurve_gamma": 2.0
