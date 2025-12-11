@@ -5,9 +5,6 @@
 // 全局配置对象
 AppConfig appConfig;
 
-/**
- * @brief 初始化 SPIFFS 文件系统
- */
 bool initSPIFFS() {
 	if (!SPIFFS.begin(true)) {
 		Serial.println("[Config] SPIFFS mount fail!");
@@ -17,9 +14,6 @@ bool initSPIFFS() {
 	return true;
 }
 
-/**
- * @brief 从指定路径读取 JSON 配置文件，填充到 appConfig
- */
 bool loadConfigFromSPIFFS(const char* path) {
 	File file = SPIFFS.open(path, "r");
 	if (!file) {
@@ -40,7 +34,7 @@ bool loadConfigFromSPIFFS(const char* path) {
 	appConfig.wifiSSID = doc["wifi"]["ssid"] | "compostlab";
 	appConfig.wifiPass = doc["wifi"]["password"] | "ZNXK8888";
 
-	// MQTT 配置
+	// MQTT
 	appConfig.mqttServer = doc["mqtt"]["server"] | "";
 	appConfig.mqttPort = doc["mqtt"]["port"] | 1883;
 	appConfig.mqttUser = doc["mqtt"]["user"] | "";
@@ -49,13 +43,12 @@ bool loadConfigFromSPIFFS(const char* path) {
 	appConfig.mqttPostTopic = doc["mqtt"]["post_topic"] | "";
 	appConfig.mqttResponseTopic = doc["mqtt"]["response_topic"] | "";
 
-	// NTP servers（支持任意个数）
+	// NTP servers
 	appConfig.ntpServers.clear();
 	JsonArray ntpArr = doc["ntp_servers"].as<JsonArray>();
 	if (!ntpArr.isNull()) {
-		for (JsonVariant v : ntpArr) {
+		for (JsonVariant v : ntpArr)
 			appConfig.ntpServers.push_back(v.as<String>());
-		}
 	}
 	if (appConfig.ntpServers.empty()) {
 		appConfig.ntpServers = {
@@ -69,7 +62,7 @@ bool loadConfigFromSPIFFS(const char* path) {
 	appConfig.pumpRunTime = doc["pump_run_time"] | 60000;
 	appConfig.readInterval = doc["read_interval"] | 600000;
 
-	// 数据 key 映射
+	// keys
 	appConfig.equipmentKey = doc["equipment_key"] | "";
 	JsonObject keysObj = doc["keys"].as<JsonObject>();
 	if (!keysObj.isNull()) {
@@ -77,14 +70,13 @@ bool loadConfigFromSPIFFS(const char* path) {
 		appConfig.keyO2 = keysObj["O2"] | "";
 		appConfig.keyRoomTemp = keysObj["RoomTemp"] | "";
 		appConfig.keyMois = keysObj["Mois"] | "";
+		appConfig.keyAirTemp = keysObj["AirTemp"] | "";       // ★ 新增
+		appConfig.keyAirHum = keysObj["AirHumidity"] | "";   // ★ 新增
 	}
 
 	return true;
 }
 
-/**
- * @brief 将 appConfig 中的内容写入到 JSON 配置文件
- */
 bool saveConfigToSPIFFS(const char* path) {
 	StaticJsonDocument<4096> doc;
 
@@ -103,9 +95,8 @@ bool saveConfigToSPIFFS(const char* path) {
 
 	// NTP
 	JsonArray ntpArr = doc.createNestedArray("ntp_servers");
-	for (const auto& server : appConfig.ntpServers) {
-		ntpArr.add(server);
-	}
+	for (auto& s : appConfig.ntpServers)
+		ntpArr.add(s);
 
 	// 控制参数
 	doc["pump_run_time"] = appConfig.pumpRunTime;
@@ -114,60 +105,44 @@ bool saveConfigToSPIFFS(const char* path) {
 	// keys
 	doc["equipment_key"] = appConfig.equipmentKey;
 	JsonObject keysObj = doc.createNestedObject("keys");
+
 	keysObj["CO2"] = appConfig.keyCO2;
 	keysObj["O2"] = appConfig.keyO2;
 	keysObj["RoomTemp"] = appConfig.keyRoomTemp;
 	keysObj["Mois"] = appConfig.keyMois;
+	keysObj["AirTemp"] = appConfig.keyAirTemp;           // ★ 新增
+	keysObj["AirHumidity"] = appConfig.keyAirHum;        // ★ 新增
 
+	// 写回文件
 	File file = SPIFFS.open(path, FILE_WRITE);
 	if (!file) {
 		Serial.printf("[Config] open %s fail for write!\n", path);
 		return false;
 	}
-
 	if (serializeJson(doc, file) == 0) {
-		Serial.println("[Config] serializeJson fail or file write fail");
+		Serial.println("[Config] serializeJson fail");
 		file.close();
 		return false;
 	}
-
 	file.close();
+
 	Serial.printf("[Config] Saved config to %s\n", path);
 	return true;
 }
 
-/**
- * @brief 打印 appConfig 当前内容
- */
 void printConfig(const AppConfig& cfg) {
 	Serial.println("----- AppConfig -----");
 
-	Serial.print("WiFi SSID: "); Serial.println(cfg.wifiSSID);
-	Serial.print("WiFi PASS: "); Serial.println(cfg.wifiPass);
-
-	Serial.print("MQTT Server: "); Serial.println(cfg.mqttServer);
-	Serial.print("MQTT Port: "); Serial.println(cfg.mqttPort);
-	Serial.print("MQTT User: "); Serial.println(cfg.mqttUser);
-	Serial.print("MQTT Pass: "); Serial.println(cfg.mqttPass);
-	Serial.print("MQTT ClientId: "); Serial.println(cfg.mqttClientId);
-	Serial.print("Post Topic: "); Serial.println(cfg.mqttPostTopic);
-	Serial.print("Response Topic: "); Serial.println(cfg.mqttResponseTopic);
-
-	Serial.println("NTP Servers:");
-	for (size_t i = 0; i < cfg.ntpServers.size(); ++i) {
-		Serial.printf("  [%d] %s\n", (int)i, cfg.ntpServers[i].c_str());
-	}
-
-	Serial.printf("PumpRunTime = %lu ms, ReadInterval = %lu ms\n",
-		cfg.pumpRunTime, cfg.readInterval);
-
-	Serial.println("Equipment Key: " + cfg.equipmentKey);
+	Serial.println("WiFi SSID: " + cfg.wifiSSID);
+	Serial.println("MQTT Server: " + cfg.mqttServer);
 
 	Serial.println("Keys:");
-	Serial.print("  CO2="); Serial.println(cfg.keyCO2);
-	Serial.print("  O2="); Serial.println(cfg.keyO2);
-	Serial.print("  RoomTemp="); Serial.println(cfg.keyRoomTemp);
-	Serial.print("  Mois="); Serial.println(cfg.keyMois);
+	Serial.println("  CO2=" + cfg.keyCO2);
+	Serial.println("  O2=" + cfg.keyO2);
+	Serial.println("  RoomTemp=" + cfg.keyRoomTemp);
+	Serial.println("  Mois=" + cfg.keyMois);
+	Serial.println("  AirTemp=" + cfg.keyAirTemp);     // ★ 新增
+	Serial.println("  AirHumidity=" + cfg.keyAirHum);  // ★ 新增
 
 	Serial.println("---------------------");
 }

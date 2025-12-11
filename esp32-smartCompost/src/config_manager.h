@@ -21,11 +21,16 @@ struct AppConfig {
 	uint32_t pumpRunTime;
 	uint32_t readInterval;
 
+	// 设备key
 	String equipmentKey;
+
+	// 数据 keys
 	String keyCO2;
 	String keyO2;
 	String keyRoomTemp;
 	String keyMois;
+	String keyAirTemp;     // ★ 新增
+	String keyAirHum;      // ★ 新增
 };
 
 extern AppConfig appConfig;
