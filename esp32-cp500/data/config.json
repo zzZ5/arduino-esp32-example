@@ -8,16 +8,16 @@
     "port": 1883,
     "user": "equipment",
     "pass": "ZNXK8888",
-    "clientId": "cp500_003",
-    "post_topic": "compostlab/VVrWsNz9y4/post/data",
-    "response_topic": "compostlab/VVrWsNz9y4/response"
+    "clientId": "cp500_007",
+    "post_topic": "compostlab/teEVTpuGbQ/post/data",
+    "response_topic": "compostlab/teEVTpuGbQ/response"
   },
   "keys": {
-    "temp_in": "U5LmBPwL6xe7lCI",
+    "temp_in": "OpYeXWdh6hLBfQA",
     "temp_out": [
-      "XvkxWf2nXoXWPUF",
-      "FiFK1SfzpiekstY",
-      "5ueSK2gHIoV32NL"
+      "fY72AARXrvIuxBP",
+      "JX0wxbNJvVaGc9j",
+      "qWvPYCUoRrsPgLD"
     ]
   },
   "post_interval": 60000,
@@ -34,7 +34,12 @@
   "temp_limitin_max": 70,
   "temp_limitout_min": 25,
   "temp_limitin_min": 25,
-  "equipment_key": "VVrWsNz9y4",
+  "equipment_key": "teEVTpuGbQ",
+  "bath_setpoint": {
+    "enabled": true,
+    "target": 65.0,
+    "hyst": 0.8
+  },
   "aeration_timer": {
     "enabled": true,
     "interval": 300000,
@@ -56,8 +61,8 @@
   "pump_learning": {
     "step_up": 0.5,
     "step_down": 0.2,
-    "max": 8.0,
-    "progress_min": 0.05
+    "max": 10.0,
+    "progress_min": 0.00
   },
   "curves": {
     "in_diff_ncurve_gamma": 2.0
