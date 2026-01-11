@@ -49,14 +49,14 @@
  *   "schema_version": 2,
  *   "timestamp": "<YYYY-MM-DD HH:MM:SS>",
  *   "channels": [
- *     {"name": "TempIn", "value": <t_in>, "unit": "℃", "quality": "<good|ERR|NaN>"},
- *     {"name": "TempOut1", "value": <t_out[0]>, "unit": "℃", "quality": "<good|ERR|NaN>"},
- *     {"name": "TempOut2", "value": <t_out[1]>, "unit": "℃", "quality": "<good|ERR|NaN>"},
- *     {"name": "TempOut3", "value": <t_out[2]>, "unit": "℃", "quality": "<good|ERR|NaN>"},
- *     {"name": "TankTemp", "value": <tank_temp>, "unit": "℃", "quality": "<good|ERR|NaN>"},
- *     {"name": "Heater", "value": <0|1>, "unit": "", "quality": "good"},
- *     {"name": "Pump", "value": <0|1>, "unit": "", "quality": "good"},
- *     {"name": "Aeration", "value": <0|1>, "unit": "", "quality": "good"}
+ *     {"code": "TempIn", "value": <t_in>, "unit": "℃", "quality": "<ok|ERR|NaN>"},
+ *     {"code": "TempOut1", "value": <t_out[0]>, "unit": "℃", "quality": "<ok|ERR|NaN>"},
+ *     {"code": "TempOut2", "value": <t_out[1]>, "unit": "℃", "quality": "<ok|ERR|NaN>"},
+ *     {"code": "TempOut3", "value": <t_out[2]>, "unit": "℃", "quality": "<ok|ERR|NaN>"},
+ *     {"code": "TankTemp", "value": <tank_temp>, "unit": "℃", "quality": "<ok|ERR|NaN>"},
+ *     {"code": "Heater", "value": <0|1>, "unit": "", "quality": "ok"},
+ *     {"code": "Pump", "value": <0|1>, "unit": "", "quality": "ok"},
+ *     {"code": "Aeration", "value": <0|1>, "unit": "", "quality": "ok"}
  *   ]
  * }
  */
@@ -67,7 +67,6 @@
 #include "config_manager.h"
 #include "wifi_ntp_mqtt.h"
 #include "sensor.h"
-#include "log_manager.h"
 #include <ArduinoJson.h>
 #include <vector>
 #include <algorithm>
@@ -972,7 +971,6 @@ void setup() {
   Serial.begin(115200);
   Serial.println("[System] 启动中");
 
-  initLogSystem();
   if (!initSPIFFS() || !loadConfigFromSPIFFS("/config.json")) {
     Serial.println("[System] 配置加载失败，重启");
     ESP.restart();
