@@ -3,7 +3,7 @@
 #include <OneWire.h>
 #include <DallasTemperature.h>
 #include "DFRobot_EOxygenSensor.h"
-#include <DHTesp.h>   // ★ 使用更稳定的 DHTesp
+#include "SHT30.h"   // ★ SHT30 温湿度传感器
 
 // ========== 全局变量 ==========
 
@@ -18,9 +18,8 @@ static DFRobot_EOxygenSensor_I2C o2sensor(&Wire, 0x70);
 static OneWire* oneWire = nullptr;
 static DallasTemperature* dallas = nullptr;
 
-// DHT22（使用 DHTesp）
-static DHTesp dht;
-static int dhtPinGlobal = -1;
+// SHT30（I2C 温湿度传感器）
+static SHT30 sht30(&Wire, 0x44);  // SHT30 I2C 地址: 0x44
 
 // 泵引脚
 static int exhaustPinGlobal = -1;
@@ -31,7 +30,6 @@ static int aerationPinGlobal = -1;
 
 bool initSensorAndPump(int exhaustPin, int aerationPin,
 	HardwareSerial& ser, int rxPin, int txPin,
-	int dhtPin,
 	unsigned long timeoutMs)
 {
 	unsigned long start = millis();
@@ -65,16 +63,18 @@ bool initSensorAndPump(int exhaustPin, int aerationPin,
 	dallas = new DallasTemperature(oneWire);
 	dallas->begin();
 
-	// ---- DHT22（使用 DHTesp） ----
-	dhtPinGlobal = dhtPin;
-	dht.setup(dhtPinGlobal, DHTesp::DHT22);
-	Serial.println("[DHT22] Sensor initialized using DHTesp");
+	// ---- SHT30（I2C 温湿度传感器） ----
+	while (!sht30.begin()) {
+		Serial.println("[SHT30] Sensor not detected, retrying...");
+		delay(500);
+	}
+	Serial.println("[SHT30] Sensor initialized");
 
-	delay(300);
-
-	TempAndHumidity test = dht.getTempAndHumidity();
-	if (isnan(test.temperature) || isnan(test.humidity)) {
-		Serial.println("[DHT22] Init WARNING: first read failed (will retry later)");
+	// 测试读取
+	float testTemp = sht30.readTemperature();
+	float testHum = sht30.readHumidity();
+	if (isnan(testTemp) || isnan(testHum)) {
+		Serial.println("[SHT30] Init WARNING: first read failed (will retry later)");
 	}
 
 	// ---- 超时 ----
@@ -176,13 +176,23 @@ float readFDS100(int pin) {
 }
 
 
-// ========== DHT22（使用 DHTesp，不会再永久 NAN） ==========
-float readDHT22Temp() {
-	TempAndHumidity data = dht.getTempAndHumidity();
-	return data.temperature;  // DHTesp 自动处理 NAN
+// ========== SHT30（I2C 温湿度传感器） ==========
+float readSHT30Temp() {
+	float temp = sht30.readTemperature();
+
+	// 检查是否读取失败
+	if (isnan(temp) || temp < -40.0 || temp > 125.0) {
+		return -127.0;
+	}
+	return temp;
 }
 
-float readDHT22Hum() {
-	TempAndHumidity data = dht.getTempAndHumidity();
-	return data.humidity;
+float readSHT30Hum() {
+	float hum = sht30.readHumidity();
+
+	// 检查是否读取失败
+	if (isnan(hum) || hum < 0.0 || hum > 100.0) {
+		return -1.0;
+	}
+	return hum;
 }

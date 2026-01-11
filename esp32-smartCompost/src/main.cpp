@@ -9,7 +9,7 @@
 // 依赖：
 // - config_manager.h/.cpp（你给的版本）
 // - wifi_ntp_mqtt.h/.cpp（提供 connectToWiFi/multiNTPSetup/connectToMQTT/publishData/maintainMQTT/getMQTTClient 等）
-// - sensor.h/.cpp（提供 initSensorAndPump/readMHZ16/readEOxygen/readDS18B20/readFDS100/readDHT22Temp/readDHT22Hum/aerationOn/aerationOff/exhaustPumpOn/exhaustPumpOff）
+// - sensor.h/.cpp（提供 initSensorAndPump/readMHZ16/readEOxygen/readDS18B20/readFDS100/readSHT30Temp/readSHT30Hum/aerationOn/aerationOff/exhaustPumpOn/exhaustPumpOff）
 // - log_manager.h/.cpp（可选）
 //
 // 注意：
@@ -356,8 +356,8 @@ static bool doMeasurementAndSave() {
   float t_ds = readDS18B20();
   float mois = readFDS100(34);
 
-  float t_air = readDHT22Temp();
-  float h_air = readDHT22Hum();
+  float t_air = readSHT30Temp();
+  float h_air = readSHT30Hum();
   if (isnan(t_air)) t_air = -1;
   if (isnan(h_air)) h_air = -1;
 
@@ -512,7 +512,8 @@ void setup() {
   }
 
   // 4) 传感器初始化（引脚按你当前项目固定：exhaust=25, aeration=26 等）
-  if (!initSensorAndPump(25, 26, Serial1, 16, 17, 15, 5000)) {
+  // SHT30 使用 I2C, 无需额外引脚
+  if (!initSensorAndPump(25, 26, Serial1, 16, 17, 5000)) {
     Serial.println("[ERR] 传感器初始化失败，重启");
     ESP.restart();
   }
