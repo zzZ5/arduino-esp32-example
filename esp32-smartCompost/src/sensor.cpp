@@ -3,7 +3,7 @@
 #include <OneWire.h>
 #include <DallasTemperature.h>
 #include "DFRobot_EOxygenSensor.h"
-#include <DHT.h>
+#include <DHTesp.h>   // ★ 使用更稳定的 DHTesp
 
 // ========== 全局变量 ==========
 
@@ -18,8 +18,8 @@ static DFRobot_EOxygenSensor_I2C o2sensor(&Wire, 0x70);
 static OneWire* oneWire = nullptr;
 static DallasTemperature* dallas = nullptr;
 
-// DHT22
-static DHT* dht22 = nullptr;
+// DHT22（使用 DHTesp）
+static DHTesp dht;
 static int dhtPinGlobal = -1;
 
 // 泵引脚
@@ -41,10 +41,10 @@ bool initSensorAndPump(int exhaustPin, int aerationPin,
 	aerationPinGlobal = aerationPin;
 
 	pinMode(exhaustPinGlobal, OUTPUT);
-	digitalWrite(exhaustPinGlobal, HIGH);   // 默认关闭（低电平打开）
+	digitalWrite(exhaustPinGlobal, HIGH);
 
 	pinMode(aerationPinGlobal, OUTPUT);
-	digitalWrite(aerationPinGlobal, LOW);   // 默认关闭（高电平打开）
+	digitalWrite(aerationPinGlobal, LOW);
 
 	// ---- MH-Z16 ----
 	mhzSerial = &ser;
@@ -65,22 +65,19 @@ bool initSensorAndPump(int exhaustPin, int aerationPin,
 	dallas = new DallasTemperature(oneWire);
 	dallas->begin();
 
-	// ---- DHT22（新增：整合到统一初始化） ----
+	// ---- DHT22（使用 DHTesp） ----
 	dhtPinGlobal = dhtPin;
-	dht22 = new DHT(dhtPinGlobal, DHT22);
-	dht22->begin();
+	dht.setup(dhtPinGlobal, DHTesp::DHT22);
+	Serial.println("[DHT22] Sensor initialized using DHTesp");
 
-	delay(500);
-	float testT = dht22->readTemperature();
-	float testH = dht22->readHumidity();
-	if (isnan(testT) || isnan(testH)) {
-		Serial.println("[DHT22] Init failed (no data)");
-	}
-	else {
-		Serial.println("[DHT22] Sensor initialized");
+	delay(300);
+
+	TempAndHumidity test = dht.getTempAndHumidity();
+	if (isnan(test.temperature) || isnan(test.humidity)) {
+		Serial.println("[DHT22] Init WARNING: first read failed (will retry later)");
 	}
 
-	// ---- 超时检测 ----
+	// ---- 超时 ----
 	if (millis() - start > timeoutMs) {
 		Serial.println("[Sensor] Init timeout");
 		return false;
@@ -132,33 +129,60 @@ int readMHZ16() {
 
 
 // ========== O2 ==========
-float readEOxygen() { return o2sensor.readOxygenConcentration(); }
+float readEOxygen() {
+	float o2 = o2sensor.readOxygenConcentration();
+
+	// 检查是否读取失败(返回值为负或 >100% 为无效)
+	if (o2 < 0 || o2 > 100.0) {
+		return -1.0;
+	}
+	return o2;
+}
 
 
 // ========== DS18B20 ==========
 float readDS18B20() {
+	if (!dallas) return -127.0;
+
 	dallas->requestTemperatures();
-	return dallas->getTempCByIndex(0);
+	// 等待温度转换完成(约 750ms)
+	delay(750);
+	float temp = dallas->getTempCByIndex(0);
+
+	// 检查是否读取失败
+	if (temp == -127.0 || temp == 85.0) {
+		return -127.0;
+	}
+	return temp;
 }
 
 
 // ========== FDS100 ==========
 float readFDS100(int pin) {
+	if (pin < 0 || pin > 39) return -1.0;
+
 	int adc = analogRead(pin);
+	// ADC 范围检查
+	if (adc < 0 || adc > 4095) return -1.0;
+
 	float voltage = adc * 3.3 / 4095.0;
 	float mois = (voltage / 2.0) * 100.0;
-	if (mois > 100) mois = 100;
+
+	// 边界检查
+	if (mois < 0.0) mois = 0.0;
+	if (mois > 100.0) mois = 100.0;
+
 	return mois;
 }
 
 
-// ========== DHT22（温湿度） ==========
+// ========== DHT22（使用 DHTesp，不会再永久 NAN） ==========
 float readDHT22Temp() {
-	float t = dht22->readTemperature();
-	return isnan(t) ? NAN : t;
+	TempAndHumidity data = dht.getTempAndHumidity();
+	return data.temperature;  // DHTesp 自动处理 NAN
 }
 
 float readDHT22Hum() {
-	float h = dht22->readHumidity();
-	return isnan(h) ? NAN : h;
+	TempAndHumidity data = dht.getTempAndHumidity();
+	return data.humidity;
 }

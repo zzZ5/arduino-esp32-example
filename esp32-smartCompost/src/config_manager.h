@@ -13,8 +13,6 @@ struct AppConfig {
 	String mqttUser;
 	String mqttPass;
 	String mqttClientId;
-	String mqttPostTopic;
-	String mqttResponseTopic;
 
 	std::vector<String> ntpServers;
 
@@ -24,13 +22,13 @@ struct AppConfig {
 	// 设备key
 	String equipmentKey;
 
-	// 数据 keys
-	String keyCO2;
-	String keyO2;
-	String keyRoomTemp;
-	String keyMois;
-	String keyAirTemp;     // ★ 新增
-	String keyAirHum;      // ★ 新增
+	// 自动生成的 MQTT topics
+	String mqttPostTopic() const {
+		return "compostlab/v2/" + equipmentKey + "/telemetry";
+	}
+	String mqttResponseTopic() const {
+		return "compostlab/v2/" + equipmentKey + "/response";
+	}
 };
 
 extern AppConfig appConfig;

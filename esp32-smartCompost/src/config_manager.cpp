@@ -40,8 +40,7 @@ bool loadConfigFromSPIFFS(const char* path) {
 	appConfig.mqttUser = doc["mqtt"]["user"] | "";
 	appConfig.mqttPass = doc["mqtt"]["pass"] | "";
 	appConfig.mqttClientId = doc["mqtt"]["clientId"] | "esp32";
-	appConfig.mqttPostTopic = doc["mqtt"]["post_topic"] | "";
-	appConfig.mqttResponseTopic = doc["mqtt"]["response_topic"] | "";
+	// post_topic 和 response_topic 现在自动根据 equipment_key 生成
 
 	// NTP servers
 	appConfig.ntpServers.clear();
@@ -64,15 +63,6 @@ bool loadConfigFromSPIFFS(const char* path) {
 
 	// keys
 	appConfig.equipmentKey = doc["equipment_key"] | "";
-	JsonObject keysObj = doc["keys"].as<JsonObject>();
-	if (!keysObj.isNull()) {
-		appConfig.keyCO2 = keysObj["CO2"] | "";
-		appConfig.keyO2 = keysObj["O2"] | "";
-		appConfig.keyRoomTemp = keysObj["RoomTemp"] | "";
-		appConfig.keyMois = keysObj["Mois"] | "";
-		appConfig.keyAirTemp = keysObj["AirTemp"] | "";       // ★ 新增
-		appConfig.keyAirHum = keysObj["AirHumidity"] | "";   // ★ 新增
-	}
 
 	return true;
 }
@@ -90,8 +80,7 @@ bool saveConfigToSPIFFS(const char* path) {
 	doc["mqtt"]["user"] = appConfig.mqttUser;
 	doc["mqtt"]["pass"] = appConfig.mqttPass;
 	doc["mqtt"]["clientId"] = appConfig.mqttClientId;
-	doc["mqtt"]["post_topic"] = appConfig.mqttPostTopic;
-	doc["mqtt"]["response_topic"] = appConfig.mqttResponseTopic;
+	// post_topic 和 response_topic 根据 equipment_key 自动生成，不需要保存
 
 	// NTP
 	JsonArray ntpArr = doc.createNestedArray("ntp_servers");
@@ -104,14 +93,6 @@ bool saveConfigToSPIFFS(const char* path) {
 
 	// keys
 	doc["equipment_key"] = appConfig.equipmentKey;
-	JsonObject keysObj = doc.createNestedObject("keys");
-
-	keysObj["CO2"] = appConfig.keyCO2;
-	keysObj["O2"] = appConfig.keyO2;
-	keysObj["RoomTemp"] = appConfig.keyRoomTemp;
-	keysObj["Mois"] = appConfig.keyMois;
-	keysObj["AirTemp"] = appConfig.keyAirTemp;           // ★ 新增
-	keysObj["AirHumidity"] = appConfig.keyAirHum;        // ★ 新增
 
 	// 写回文件
 	File file = SPIFFS.open(path, FILE_WRITE);
@@ -135,14 +116,7 @@ void printConfig(const AppConfig& cfg) {
 
 	Serial.println("WiFi SSID: " + cfg.wifiSSID);
 	Serial.println("MQTT Server: " + cfg.mqttServer);
-
-	Serial.println("Keys:");
-	Serial.println("  CO2=" + cfg.keyCO2);
-	Serial.println("  O2=" + cfg.keyO2);
-	Serial.println("  RoomTemp=" + cfg.keyRoomTemp);
-	Serial.println("  Mois=" + cfg.keyMois);
-	Serial.println("  AirTemp=" + cfg.keyAirTemp);     // ★ 新增
-	Serial.println("  AirHumidity=" + cfg.keyAirHum);  // ★ 新增
+	Serial.println("Equipment Key: " + cfg.equipmentKey);
 
 	Serial.println("---------------------");
 }

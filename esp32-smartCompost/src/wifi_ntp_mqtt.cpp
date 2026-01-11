@@ -135,8 +135,9 @@ bool connectToMQTT(unsigned long timeoutMs) {
 			Serial.println("[MQTT] Connected.");
 
 			// 连接成功后重新订阅响应 topic
-			if (appConfig.mqttResponseTopic.length() > 0) {
-				if (mqttClient.subscribe(appConfig.mqttResponseTopic.c_str())) {
+			String respTopic = appConfig.mqttResponseTopic();
+			if (respTopic.length() > 0) {
+				if (mqttClient.subscribe(respTopic.c_str())) {
 					Serial.println("[MQTT] Resubscribed to response topic.");
 				}
 				else {

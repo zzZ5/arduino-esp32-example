@@ -1,34 +1,20 @@
 {
   "wifi": {
-    "ssid": "Compostlab",
-    "password": "znxk8888"
+    "ssid": "沃土3",
+    "password": "y2859307.."
   },
   "mqtt": {
     "server": "118.25.108.254",
     "port": 1883,
     "user": "equipment",
-    "pass": "ZNXK8888",
-    "clientId": "smartCompost001",
-    "post_topic": "compostlab/KgSERnY2Zn/post/data",
-    "response_topic": "compostlab/KgSERnY2Zn/response"
+    "pass": "ZNXK8888"
   },
   "ntp_servers": [
     "ntp.ntsc.ac.cn",
     "ntp.aliyun.com",
-    "cn.ntp.org.cn",
-    "ntp.tuna.tsinghua.edu.cn",
-    "ntp.sjtu.edu.cn",
-    "202.120.2.101"
+    "cn.ntp.org.cn"
   ],
   "pump_run_time": 60000,
-  "read_interval": 600000,
-  "equipment_key": "KgSERnY2Zn",
-  "keys": {
-    "CO2": "ue5RkzOpT5jGaQR",
-    "O2": "Z2R5Ep3GP4pB1tk",
-    "RoomTemp": "RIbjMs78qOdtr0z",
-    "Mois": "iu60u9UCTMk2gY7",
-    "AirHumidity": "0P8WQ1BWi5fIDeB",
-    "AirTemp": "1b1QwAG5Ry5sHoH"
-  }
+  "read_interval": 60000,
+  "equipment_key": "SmartCompost001"
 }
