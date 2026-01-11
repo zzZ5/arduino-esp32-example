@@ -3,7 +3,23 @@
 
 #include <Arduino.h>
 
-// 初始化：抽气泵、曝气泵、MH-Z16、O2、DS18B20、DHT22
+/**
+ * 初始化所有传感器：
+ * - 抽气泵 (exhaustPin)
+ * - 曝气泵 (aerationPin)
+ * - MH-Z16 (CO₂)
+ * - DFRobot O₂
+ * - DS18B20 温度
+ * - DHT22 (气体温湿度, 使用 DHTesp)
+ *
+ * @param exhaustPin 抽气泵 GPIO
+ * @param aerationPin 曝气泵 GPIO
+ * @param ser MH-Z16 使用的串口 (如 Serial1)
+ * @param rxPin MH-Z16 RX
+ * @param txPin MH-Z16 TX
+ * @param dhtPin DHT22 数据引脚
+ * @param timeoutMs 初始化最大等待时间
+ */
 bool initSensorAndPump(int exhaustPin, int aerationPin,
 	HardwareSerial& ser, int rxPin, int txPin,
 	int dhtPin,
@@ -16,11 +32,13 @@ void aerationOn();
 void aerationOff();
 
 // 传感器读取
-int readMHZ16();          // CO2
-float readEOxygen();      // O2
-float readDS18B20();      // 物料温度
-float readFDS100(int pin);// 含水率
-float readDHT22Temp();    // 气体温度
-float readDHT22Hum();     // 气体湿度
+int   readMHZ16();         // CO₂ 浓度（ppm）
+float readEOxygen();       // O₂ 浓度（%）
+float readDS18B20();       // DS18B20 物料温度（°C）
+float readFDS100(int pin); // 含水率（%）
+
+// DHT22（使用 DHTesp 驱动）
+float readDHT22Temp();     // 气体温度（°C）
+float readDHT22Hum();      // 气体湿度（%RH）
 
 #endif

@@ -21,9 +21,39 @@ bool loadConfigFromSPIFFS(const char* path) {
 		return false;
 	}
 
-	StaticJsonDocument<4096> doc;
-	DeserializationError err = deserializeJson(doc, file);
+	// 调试信息：显示文件大小
+	size_t fileSize = file.size();
+	Serial.printf("[Config] File size: %d bytes\n", fileSize);
+
+	if (fileSize == 0) {
+		Serial.println("[Config] Config file is empty!");
+		Serial.println("[Config] Using default configuration...");
+		file.close();
+
+		// 使用默认配置
+		appConfig.wifiSSID = "compostlab";
+		appConfig.wifiPass = "ZNXK8888";
+		appConfig.mqttServer = "";
+		appConfig.mqttPort = 1883;
+		appConfig.mqttUser = "";
+		appConfig.mqttPass = "";
+		appConfig.mqttClientId = "esp32";
+		appConfig.ntpServers = {"ntp.aliyun.com", "cn.ntp.org.cn"};
+		appConfig.pumpRunTime = 60000;
+		appConfig.readInterval = 60000;
+		appConfig.equipmentKey = "SmartCompost001";
+
+		return true;
+	}
+
+	// 读取文件内容
+	String content = file.readString();
+	Serial.printf("[Config] Content preview: %s\n", content.substring(0, min(100, (int)content.length())).c_str());
 	file.close();
+
+	// 重新打开文件解析
+	StaticJsonDocument<4096> doc;
+	DeserializationError err = deserializeJson(doc, content);
 	if (err) {
 		Serial.print("[Config] parse error: ");
 		Serial.println(err.c_str());

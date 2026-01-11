@@ -9,15 +9,15 @@
     "user": "equipment",
     "pass": "ZNXK8888",
     "clientId": "cp500_007",
-    "post_topic": "compostlab/teEVTpuGbQ/post/data",
-    "response_topic": "compostlab/teEVTpuGbQ/response"
+    "post_topic": "compostlab/H3w8flPrdA/post/data",
+    "response_topic": "compostlab/H3w8flPrdA/response"
   },
   "keys": {
-    "temp_in": "OpYeXWdh6hLBfQA",
+    "temp_in": "084iGBoMAWIN7s1",
     "temp_out": [
-      "fY72AARXrvIuxBP",
-      "JX0wxbNJvVaGc9j",
-      "qWvPYCUoRrsPgLD"
+      "gfgyW0qWR4dhUue",
+      "dkWPmqgniEzqLsX",
+      "hgGVje66vQVeuia"
     ]
   },
   "post_interval": 60000,
@@ -34,7 +34,7 @@
   "temp_limitin_max": 70,
   "temp_limitout_min": 25,
   "temp_limitin_min": 25,
-  "equipment_key": "teEVTpuGbQ",
+  "equipment_key": "H3w8flPrdA",
   "bath_setpoint": {
     "enabled": true,
     "target": 65.0,
