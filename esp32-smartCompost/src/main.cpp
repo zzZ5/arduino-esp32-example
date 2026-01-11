@@ -29,7 +29,6 @@
 #include "config_manager.h"
 #include "wifi_ntp_mqtt.h"
 #include "sensor.h"
-#include "log_manager.h"
 
 // ======================= 持久化 =======================
 Preferences preferences;
@@ -481,9 +480,6 @@ static void commandTask(void*) {
 void setup() {
   Serial.begin(115200);
   Serial.println("[System] 启动中...");
-
-  initLogSystem();
-  setMinLogLevel(LogLevel::INFO);
 
   // 1) SPIFFS + 读取 config.json
   if (!initSPIFFS() || !loadConfigFromSPIFFS("/config.json")) {
