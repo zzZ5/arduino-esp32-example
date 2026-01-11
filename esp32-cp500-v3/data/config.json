@@ -1,0 +1,59 @@
+{
+  "wifi": {
+    "ssid": "Compostlab",
+    "password": "znxk8888"
+  },
+  "mqtt": {
+    "server": "118.25.108.254",
+    "port": 1883,
+    "user": "equipment",
+    "pass": "ZNXK8888",
+    "device_code": "H3w8flPrdA"
+  },
+  "post_interval": 60000,
+  "ntp_host": [
+    "ntp.ntsc.ac.cn",
+    "ntp.aliyun.com",
+    "cn.ntp.org.cn",
+    "ntp.tuna.tsinghua.edu.cn",
+    "ntp.sjtu.edu.cn",
+    "202.120.2.101"
+  ],
+  "temp_limitout_max": 65,
+  "temp_limitin_max": 70,
+  "temp_limitout_min": 25,
+  "temp_limitin_min": 25,
+  "temp_maxdif": 13,
+  "bath_setpoint": {
+    "enabled": true,
+    "target": 65.0,
+    "hyst": 0.8
+  },
+  "aeration_timer": {
+    "enabled": true,
+    "interval": 300000,
+    "duration": 300000
+  },
+  "safety": {
+    "tank_temp_max": 90.0
+  },
+  "heater_guard": {
+    "min_on_ms": 30000,
+    "min_off_ms": 30000
+  },
+  "pump_adaptive": {
+    "delta_on_min": 6.0,
+    "delta_on_max": 25.0,
+    "hyst_nom": 3.0,
+    "ncurve_gamma": 1.3
+  },
+  "pump_learning": {
+    "step_up": 0.5,
+    "step_down": 0.2,
+    "max": 10.0,
+    "progress_min": 0.05
+  },
+  "curves": {
+    "in_diff_ncurve_gamma": 2.0
+  }
+}
