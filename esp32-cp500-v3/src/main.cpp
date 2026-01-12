@@ -369,7 +369,9 @@ void mqttCallback(char* topic, byte* payload, unsigned int length) {
     String cmd = obj["command"] | "";
     String action = obj["action"] | "";
     unsigned long duration = obj["duration"] | 0UL;
-    String schedule = obj["schedule"] | "";
+
+    // 兼容 fan 和 aeration 命令(实际控制同一设备)
+    if (cmd == "fan") cmd = "aeration";
 
     if (cmd == "config_update") {
       JsonObject cfg = obj["config"].as<JsonObject>();
@@ -391,16 +393,6 @@ void mqttCallback(char* topic, byte* payload, unsigned int length) {
     }
 
     time_t target = time(nullptr);
-    if (schedule.length() > 0) {
-      struct tm schedTime = {};
-      if (strptime(schedule.c_str(), "%Y-%m-%d %H:%M:%S", &schedTime)) {
-        target = mktime(&schedTime);
-      }
-      else {
-        Serial.println("[MQTT] 错误的时间格式（期望 YYYY-MM-DD HH:MM:SS）");
-        continue;
-      }
-    }
 
     if (gCmdMutex && xSemaphoreTake(gCmdMutex, pdMS_TO_TICKS(200))) {
       pendingCommands.push_back({ cmd, action, duration, target });

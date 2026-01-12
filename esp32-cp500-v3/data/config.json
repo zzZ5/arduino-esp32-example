@@ -8,7 +8,7 @@
     "port": 1883,
     "user": "equipment",
     "pass": "ZNXK8888",
-    "device_code": "H3w8flPrdA"
+    "device_code": "CP500-VT001"
   },
   "post_interval": 60000,
   "ntp_host": [
