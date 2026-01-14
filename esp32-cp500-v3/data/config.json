@@ -25,7 +25,7 @@
   "temp_limitin_min": 25,
   "temp_maxdif": 13,
   "bath_setpoint": {
-    "enabled": true,
+    "enabled": false,
     "target": 65.0,
     "hyst": 0.8
   },
