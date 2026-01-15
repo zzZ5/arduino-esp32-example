@@ -16,5 +16,5 @@
     "cn.ntp.org.cn"
   ],
   "pump_run_time": 60000,
-  "read_interval": 60000
+  "read_interval": 120000
 }

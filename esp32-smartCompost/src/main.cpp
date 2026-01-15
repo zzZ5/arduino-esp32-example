@@ -21,6 +21,7 @@
 //      B) 兼容你之前习惯的小写：keys: { "co2": "...", "o2": "...", "temp": "...", ... }
 
 #include <Arduino.h>
+#include <WiFi.h>
 #include <Preferences.h>
 #include <time.h>
 #include <vector>
