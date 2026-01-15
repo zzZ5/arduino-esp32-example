@@ -468,7 +468,8 @@ pio run --target uploadfs
     {"code": "TankTemp", "value": 80.0, "unit": "℃", "quality": "ok"},
     {"code": "Heater", "value": 1, "unit": "", "quality": "ok"},
     {"code": "Pump", "value": 1, "unit": "", "quality": "ok"},
-    {"code": "Aeration", "value": 0, "unit": "", "quality": "ok"}
+    {"code": "Aeration", "value": 0, "unit": "", "quality": "ok"},
+    {"code": "EmergencyState", "value": 0, "unit": "", "quality": "ok"}
   ]
 }
 ```
@@ -611,7 +612,6 @@ pio run --target uploadfs
 - 温度测量和数据上报继续工作
 - 只有急停恢复命令能解除锁定
 - 急停命令不需要 `device` 字段，优先级最高
-- 详细说明请参考 [EMERGENCY_STOP.md](EMERGENCY_STOP.md)
 
 ## 温控模式详解
 
@@ -703,8 +703,8 @@ pio run --target uploadfs
 ```
 1. 紧急停止（最高优先级）
 2. 安全保护（外浴超上限、水箱过热）
-3. 手动控制软锁
-4. 自动控制逻辑（Setpoint / n-curve）
+3. 自动控制逻辑（Setpoint / n-curve）
+4. 手动控制软锁（n-curve模式在自动逻辑后生效）
 5. 设备执行层（加热器防抖、曝气定时）
 ```
 
@@ -904,12 +904,11 @@ if (!hardCool && !bath_setpoint.enabled) {
 | diff_now ≤ DIFF_THR | false | 是（且需预热水箱） | - | 开 | 关 |
 | diff_now ≤ DIFF_THR | false | 否 | - | 关 | 关 |
 
-#### 第七步：手动控制软锁检查
+#### 第七步：手动控制软锁检查（n-curve模式）
 
 ```cpp
-unsigned long nowMs = millis();
-bool heaterManualActive = (heaterManualUntilMs != 0 && (nowMs - heaterManualUntilMs) < 0);
-bool pumpManualActive = (pumpManualUntilMs != 0 && (nowMs - pumpManualUntilMs) < 0);
+bool heaterManualActive = isManualLockActive(heaterManualUntilMs);
+bool pumpManualActive = isManualLockActive(pumpManualUntilMs);
 
 if (heaterManualActive) {
   targetHeat = heaterIsOn;  // 保持当前状态
@@ -921,6 +920,10 @@ if (pumpManualActive) {
   reason += " | 手动泵锁生效";
 }
 ```
+
+**注意**：
+- n-curve模式下，手动软锁检查在自动控制逻辑之后执行（在所有控制逻辑决定之后生效）
+- Setpoint模式下，手动软锁检查在自动控制逻辑之前执行
 
 **作用**：
 - 手动命令后设置软锁
@@ -1153,12 +1156,22 @@ void commandTask(void* pv) {
   while (true) {
     time_t now = time(nullptr);
 
-    // 遍历命令队列
-    for (int i = 0; i < pendingCommands.size(); i++) {
-      if (now >= pendingCommands[i].targetTime) {
-        executeCommand(pendingCommands[i]);
-        pendingCommands.erase(i);
+    // 先收集需要执行的命令
+    std::vector<PendingCommand> readyToExecute;
+    if (gCmdMutex && xSemaphoreTake(gCmdMutex, pdMS_TO_TICKS(200))) {
+      // 从后往前遍历，避免删除元素时影响索引
+      for (int i = (int)pendingCommands.size() - 1; i >= 0; --i) {
+        if (now >= pendingCommands[i].targetTime) {
+          readyToExecute.push_back(pendingCommands[i]);
+          pendingCommands.erase(pendingCommands.begin() + i);
+        }
       }
+      xSemaphoreGive(gCmdMutex);
+    }
+
+    // 在互斥量外执行命令，避免阻塞其他任务
+    for (const auto& cmd : readyToExecute) {
+      executeCommand(cmd);
     }
 
     vTaskDelay(200 / portTICK_PERIOD_MS);
@@ -1237,9 +1250,7 @@ esp32-cp500-v3/
 │   ├── sensor.h            # 传感器接口
 │   ├── sensor.cpp          # 传感器实现
 │   ├── wifi_ntp_mqtt.h    # 网络和 MQTT 头文件
-│   ├── wifi_ntp_mqtt.cpp  # 网络和 MQTT 实现
-│   ├── emergency_stop.h    # 紧急停止模块头文件
-│   └── emergency_stop.cpp  # 紧急停止模块实现
+│   └── wifi_ntp_mqtt.cpp  # 网络和 MQTT 实现
 ├── data/                  # SPIFFS 数据文件
 │   └── config.json        # 配置文件
 ├── platformio.ini          # PlatformIO 配置
