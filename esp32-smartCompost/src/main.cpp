@@ -1,7 +1,7 @@
 // main.cpp  (ESP32 + Arduino + PlatformIO)
 //
 // 目标：
-// 1) 与 config_manager.cpp 的字段/含义保持一致：pump_run_time、read_interval、mqtt(post_topic/response_topic)、ntp_servers、keys( CO2/O2/RoomTemp/Mois/AirTemp/AirHumidity )
+// 1) 与 config_manager.cpp 的字段/含义保持一致：pump_run_time、read_interval、mqtt(post_topic/response_topic)、ntp_servers、keys( CO2/O2/RoomTemp/AirTemp/AirHumidity )
 // 2) MQTT 指令统一入口：restart / aeration / exhaust / config_update
 // 3) 第一次连接 MQTT 后发布上线消息，同时把“完整当前配置”一并上传
 // 4) config_update 只更新指令里出现的字段，其它保持原状；保存到 /config.json 后重启生效
@@ -9,7 +9,7 @@
 // 依赖：
 // - config_manager.h/.cpp（你给的版本）
 // - wifi_ntp_mqtt.h/.cpp（提供 connectToWiFi/multiNTPSetup/connectToMQTT/publishData/maintainMQTT/getMQTTClient 等）
-// - sensor.h/.cpp（提供 initSensorAndPump/readMHZ16/readEOxygen/readDS18B20/readFDS100/readSHT30Temp/readSHT30Hum/aerationOn/aerationOff/exhaustPumpOn/exhaustPumpOff）
+// - sensor.h/.cpp（提供 initSensorAndPump/readMHZ16/readEOxygen/readDS18B20/readSHT30Temp/readSHT30Hum/aerationOn/aerationOff/exhaustPumpOn/exhaustPumpOff）
 // - log_manager.h/.cpp（可选）
 //
 // 注意：
@@ -92,9 +92,8 @@ static void fillConfigJson(JsonObject cfg) {
   cfg["pump_run_time"] = appConfig.pumpRunTime;
   cfg["read_interval"] = appConfig.readInterval;
 
-
   // 设备标识
-  cfg["equipment_key"] = appConfig.equipmentKey;
+  cfg["device_code"] = appConfig.deviceCode;
 }
 
 // =====================================================
@@ -102,7 +101,7 @@ static void fillConfigJson(JsonObject cfg) {
 // =====================================================
 static void publishOnlineWithConfig() {
   JsonDocument doc;
-  doc["device"] = appConfig.equipmentKey;
+  doc["device"] = appConfig.deviceCode;
   doc["status"] = "online";
   doc["timestamp"] = getTimeString();
 
@@ -163,7 +162,10 @@ static bool updateAppConfigFromJson(JsonObject cfg) {
     if (mqtt["clientId"].is<String>() || mqtt["clientId"].is<const char*>())
       appConfig.mqttClientId = readStr(mqtt["clientId"]);
 
-    // post_topic 和 response_topic 现在自动根据 equipment_key 生成，忽略配置中的字段
+    if (mqtt["device_code"].is<String>() || mqtt["device_code"].is<const char*>())
+      appConfig.deviceCode = readStr(mqtt["device_code"]);
+
+    // post_topic 和 response_topic 现在自动根据 device_code 生成，忽略配置中的字段
   }
 
   // -------- NTP servers --------
@@ -178,9 +180,9 @@ static bool updateAppConfigFromJson(JsonObject cfg) {
     Serial.printf("[CFG] ntp_servers size = %u\n", (unsigned)appConfig.ntpServers.size());
   }
 
-  // -------- equipment_key（一般不建议改，但仍支持）--------
+  // -------- device_code 兼容旧配置格式 --------
   if (cfg["equipment_key"].is<const char*>() || cfg["equipment_key"].is<String>()) {
-    appConfig.equipmentKey = readStr(cfg["equipment_key"]);
+    appConfig.deviceCode = readStr(cfg["equipment_key"]);
   }
 
   return true;
@@ -251,7 +253,7 @@ static void mqttCallback(char* topic, byte* payload, unsigned int length) {
   }
 
   String device = readStr(doc["device"], "");
-  if (device != appConfig.equipmentKey) {
+  if (device != appConfig.deviceCode) {
     Serial.println("[MQTT] 设备不匹配，忽略");
     return;
   }
@@ -354,7 +356,6 @@ static bool doMeasurementAndSave() {
   // 其他传感器
   float o2 = readEOxygen();
   float t_ds = readDS18B20();
-  float mois = readFDS100(34);
 
   float t_air = readSHT30Temp();
   float h_air = readSHT30Hum();
@@ -398,14 +399,6 @@ static bool doMeasurementAndSave() {
   payload += "\"value\":" + String(t_ds, 1) + ",";
   payload += "\"unit\":\"℃\",";
   payload += "\"quality\":\"" + String(getQuality(t_ds)) + "\"";
-  payload += "},";
-
-  // MOIS (%)
-  payload += "{";
-  payload += "\"code\":\"MOIS\",";
-  payload += "\"value\":" + String(mois, 1) + ",";
-  payload += "\"unit\":\"%\",";
-  payload += "\"quality\":\"" + String(getQuality(mois)) + "\"";
   payload += "},";
 
   // AirTemp (℃)
@@ -501,7 +494,7 @@ void setup() {
 
   getMQTTClient().setCallback(mqttCallback);
 
-  // 订阅 response topic（根据 equipment_key 自动生成）
+  // 订阅 response topic（根据 device_code 自动生成）
   String respTopic = appConfig.mqttResponseTopic();
   if (respTopic.length() > 0) {
     getMQTTClient().subscribe(respTopic.c_str());
@@ -522,27 +515,38 @@ void setup() {
   readMHZ16();
   delay(500);
 
-  // 5) 恢复上次测量时间（避免重启后立刻测）
+  // 5) 恢复上次测量时间（确保重启后按照间隔时间测量）
   if (preferences.begin(NVS_NAMESPACE, false)) {
     unsigned long lastSec = preferences.getULong(NVS_KEY_LAST_MEAS, 0);
     time_t nowSec = time(nullptr);
 
-    unsigned long intervalSec = appConfig.readInterval / 1000UL;
-    if (intervalSec == 0) intervalSec = 1;  // 避免除零
+    if (lastSec > 0 && nowSec > (time_t)lastSec) {
+      // 计算上次测量到现在经过的时间
+      unsigned long elapsedMs = (unsigned long)(nowSec - (time_t)lastSec) * 1000UL;
 
-    unsigned long elapsedSec = (nowSec > (time_t)lastSec) ? (unsigned long)(nowSec - (time_t)lastSec) : 0;
-
-    // 无论是否超过间隔,都从当前时间开始计时,避免启动后立即上传
-    if (elapsedSec >= intervalSec) {
-      // 已超过间隔,等待一个完整周期后再测量
+      if (elapsedMs >= appConfig.readInterval) {
+        // 已超过间隔，立即测量
+        Serial.println("[Time] Interval exceeded, measuring immediately...");
+        doMeasurementAndSave();
+        // 将 prevMeasureMs 设置为应该上一次测量的时间点，确保下次测量间隔正确
+        prevMeasureMs = millis() - elapsedMs;
+        unsigned long nextDelayMs = appConfig.readInterval - (elapsedMs % appConfig.readInterval);
+        Serial.printf("[Time] Next measure in %lu ms\n", nextDelayMs);
+      } else {
+        // 还未到间隔，等待剩余时间
+        prevMeasureMs = millis() - elapsedMs;
+        unsigned long remainingMs = appConfig.readInterval - elapsedMs;
+        Serial.printf("[Time] Wait %lu ms until next measure\n", remainingMs);
+      }
+    } else {
+      // 没有上次记录或时间异常，从现在开始
       prevMeasureMs = millis();
-    }
-    else {
-      // 还未超过间隔,继续之前的计时
-      unsigned long remainingMs = (intervalSec - elapsedSec) * 1000UL;
-      prevMeasureMs = millis() - (appConfig.readInterval - remainingMs);
+      Serial.println("[Time] No previous measure record, starting fresh");
     }
     preferences.end();
+  } else {
+    // NVS 失败，从现在开始
+    prevMeasureMs = millis();
   }
 
   // 6) 上线消息：带完整配置（关键！）

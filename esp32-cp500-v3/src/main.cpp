@@ -67,6 +67,7 @@
 #include "config_manager.h"
 #include "wifi_ntp_mqtt.h"
 #include "sensor.h"
+#include "emergency_stop.h"
 #include <ArduinoJson.h>
 #include <vector>
 #include <algorithm>
@@ -359,8 +360,6 @@ void mqttCallback(char* topic, byte* payload, unsigned int length) {
     Serial.println(String("[MQTT] JSON 解析错误：") + err.c_str());
     return;
   }
-  String device = doc["device"] | "";
-  if (device != appConfig.mqttDeviceCode) return;
   JsonArray cmds = doc["commands"].as<JsonArray>();
   if (cmds.isNull()) return;
 
@@ -372,6 +371,24 @@ void mqttCallback(char* topic, byte* payload, unsigned int length) {
 
     // 兼容 fan 和 aeration 命令(实际控制同一设备)
     if (cmd == "fan") cmd = "aeration";
+
+    // === 紧急停止命令（最高优先级，无需 device 字段检查）===
+    if (cmd == "emergency") {
+      if (action == "on") {
+        Serial.println("[CMD] 收到急停命令");
+        activateEmergencyStop();
+      } else if (action == "off") {
+        Serial.println("[CMD] 收到恢复命令");
+        resumeFromEmergencyStop();
+      }
+      continue;
+    }
+
+    // 其他命令：急停状态下拒绝执行
+    if (isEmergencyStopped()) {
+      Serial.println("[CMD] ⚠️ 急停状态生效中，拒绝执行命令: " + cmd);
+      continue;
+    }
 
     if (cmd == "config_update") {
       JsonObject cfg = obj["config"].as<JsonObject>();
@@ -406,6 +423,12 @@ void mqttCallback(char* topic, byte* payload, unsigned int length) {
 
 // ========================= 非阻塞命令执行 =========================
 void executeCommand(const PendingCommand& pcmd) {
+  // 急停状态下拒绝执行所有手动命令
+  if (isEmergencyStopped()) {
+    Serial.println("[CMD] ⚠️ 急停状态生效中，拒绝执行: " + pcmd.cmd);
+    return;
+  }
+
   Serial.printf("[CMD] 执行：%s %s 持续 %lu ms\n",
     pcmd.cmd.c_str(), pcmd.action.c_str(), pcmd.duration);
 
@@ -588,6 +611,13 @@ static bool buildChannelsAndPublish(
   ch_aer["unit"] = "";
   ch_aer["quality"] = "ok";
 
+  // EmergencyState 通道（急停状态）
+  JsonObject ch_emergency = channels.createNestedObject();
+  ch_emergency["code"] = "EmergencyState";
+  ch_emergency["value"] = (int)getEmergencyState();
+  ch_emergency["unit"] = "";
+  ch_emergency["quality"] = "ok";
+
   String payload;
   serializeJson(doc, payload);
   bool ok = publishData(getTelemetryTopic(), payload, 10000);
@@ -604,6 +634,35 @@ static bool buildChannelsAndPublish(
 // ========================= 主测量 + 控制 + 上报 =========================
 bool doMeasurementAndSave() {
   Serial.println("[Measure] 采集温度");
+
+  // === 急停检查：阻断所有自动控制 ===
+  if (shouldBlockControl()) {
+    Serial.println("[Emergency] 🛑 急停状态生效中，暂停自动控制");
+
+    // 即使急停，仍需采集温度并上报，但不执行控制
+    float t_in = readTempIn();
+    std::vector<float> t_outs = readTempOut();
+    float t_tank = readTempTank();
+
+    if (t_outs.empty()) {
+      Serial.println("[Measure] 外部温度读数为空，跳过本轮上报");
+      return false;
+    }
+
+    float med_out = median(t_outs, -20.0f, 100.0f, 5.0f);
+    if (isnan(med_out)) {
+      Serial.println("[Measure] 外部温度有效值为空，跳过本轮上报");
+      return false;
+    }
+
+    String ts = getTimeString();
+    time_t nowEpoch = time(nullptr);
+
+    // 上报数据（包括急停状态）
+    bool tankValid = !isnan(t_tank) && (t_tank > -10.0f) && (t_tank < 120.0f);
+    bool ok = buildChannelsAndPublish(t_in, t_outs, t_tank, tankValid, ts, nowEpoch, "Emergency");
+    return ok;
+  }
 
   float t_in = readTempIn();                 // 核心温度（内部）
   std::vector<float> t_outs = readTempOut();   // 外浴多个探头
@@ -963,6 +1022,9 @@ void setup() {
   Serial.begin(115200);
   Serial.println("[System] 启动中");
 
+  // === 初始化急停模块（优先级最高）===
+  initEmergencyStop();
+
   if (!initSPIFFS() || !loadConfigFromSPIFFS("/config.json")) {
     Serial.println("[System] 配置加载失败，重启");
     ESP.restart();
@@ -1036,71 +1098,91 @@ void setup() {
   }
   String currentMode = appConfig.bathSetEnabled ? "setpoint" : "ncurve";
 
+  // 获取 IP 地址
+  String ipAddress = WiFi.localIP().toString();
+
+  // 构建完整的配置对象
   JsonDocument bootDoc;
   bootDoc["schema_version"] = 2;
-  bootDoc["ts"] = nowStr;
-  bootDoc["device"] = appConfig.mqttDeviceCode;
-  bootDoc["status"] = "online";
-  bootDoc["last_measure_time"] = lastMeasStr;
+  bootDoc["timestamp"] = nowStr;
+  bootDoc["ip_address"] = ipAddress;
 
-  // ---- 控制配置信息（other 字段）----
-  JsonObject other = bootDoc.createNestedObject("other");
+  // ---- 完整配置信息（config 字段）----
+  JsonObject config = bootDoc.createNestedObject("config");
 
-  other["mode"] = currentMode;
+  // WiFi 配置
+  JsonObject wifi = config.createNestedObject("wifi");
+  wifi["ssid"] = appConfig.wifiSSID;
+  wifi["password"] = appConfig.wifiPass;
 
-  // 基础节拍
-  other["post_interval"] = appConfig.postInterval;
+  // MQTT 配置
+  JsonObject mqtt = config.createNestedObject("mqtt");
+  mqtt["server"] = appConfig.mqttServer;
+  mqtt["port"] = appConfig.mqttPort;
+  mqtt["user"] = appConfig.mqttUser;
+  mqtt["pass"] = appConfig.mqttPass;
+  mqtt["device_code"] = appConfig.mqttDeviceCode;
+
+  // NTP 服务器
+  JsonArray ntpServers = config.createNestedArray("ntp_servers");
+  for (const auto& server : appConfig.ntpServers) {
+    ntpServers.add(server);
+  }
+
+  // 测控周期
+  config["read_interval"] = appConfig.postInterval;
 
   // 温度限值
-  JsonObject limits = other.createNestedObject("temp_limits");
-  limits["out_max"] = appConfig.tempLimitOutMax;
-  limits["out_min"] = appConfig.tempLimitOutMin;
-  limits["in_max"] = appConfig.tempLimitInMax;
-  limits["in_min"] = appConfig.tempLimitInMin;
+  config["temp_limitout_max"] = appConfig.tempLimitOutMax;
+  config["temp_limitin_max"] = appConfig.tempLimitInMax;
+  config["temp_limitout_min"] = appConfig.tempLimitOutMin;
+  config["temp_limitin_min"] = appConfig.tempLimitInMin;
+  config["temp_maxdif"] = appConfig.tempMaxDiff;
+
+  // 曝气定时
+  JsonObject aerationTimer = config.createNestedObject("aeration_timer");
+  aerationTimer["enabled"] = appConfig.aerationTimerEnabled;
+  aerationTimer["interval"] = appConfig.aerationInterval;
+  aerationTimer["duration"] = appConfig.aerationDuration;
 
   // 水箱安全
-  JsonObject safety = other.createNestedObject("safety");
+  JsonObject safety = config.createNestedObject("safety");
   safety["tank_temp_max"] = appConfig.tankTempMax;
 
   // 加热器防抖
-  JsonObject hg = other.createNestedObject("heater_guard");
-  hg["min_on_ms"] = appConfig.heaterMinOnMs;
-  hg["min_off_ms"] = appConfig.heaterMinOffMs;
+  JsonObject heaterGuard = config.createNestedObject("heater_guard");
+  heaterGuard["min_on_ms"] = appConfig.heaterMinOnMs;
+  heaterGuard["min_off_ms"] = appConfig.heaterMinOffMs;
 
   // 泵自适应阈值
-  JsonObject pa = other.createNestedObject("pump_adaptive");
-  pa["delta_on_min"] = appConfig.pumpDeltaOnMin;
-  pa["delta_on_max"] = appConfig.pumpDeltaOnMax;
-  pa["hyst_nom"] = appConfig.pumpHystNom;
-  pa["ncurve_gamma"] = appConfig.pumpNCurveGamma;
+  JsonObject pumpAdaptive = config.createNestedObject("pump_adaptive");
+  pumpAdaptive["delta_on_min"] = appConfig.pumpDeltaOnMin;
+  pumpAdaptive["delta_on_max"] = appConfig.pumpDeltaOnMax;
+  pumpAdaptive["hyst_nom"] = appConfig.pumpHystNom;
+  pumpAdaptive["ncurve_gamma"] = appConfig.pumpNCurveGamma;
 
   // 泵学习参数
-  JsonObject pl = other.createNestedObject("pump_learning");
-  pl["step_up"] = appConfig.pumpLearnStepUp;
-  pl["step_down"] = appConfig.pumpLearnStepDown;
-  pl["max"] = appConfig.pumpLearnMax;
-  pl["progress_min"] = appConfig.pumpProgressMin;
+  JsonObject pumpLearning = config.createNestedObject("pump_learning");
+  pumpLearning["step_up"] = appConfig.pumpLearnStepUp;
+  pumpLearning["step_down"] = appConfig.pumpLearnStepDown;
+  pumpLearning["max"] = appConfig.pumpLearnMax;
+  pumpLearning["progress_min"] = appConfig.pumpProgressMin;
 
   // n-curve diff 曲线参数
-  JsonObject curves = other.createNestedObject("curves");
+  JsonObject curves = config.createNestedObject("curves");
   curves["in_diff_ncurve_gamma"] = appConfig.inDiffNCurveGamma;
 
   // Setpoint 模式参数
-  JsonObject bs = other.createNestedObject("bath_setpoint");
-  bs["enabled"] = appConfig.bathSetEnabled;
-  bs["target"] = appConfig.bathSetTarget;
-  bs["hyst"] = appConfig.bathSetHyst;
-
-  // 曝气定时
-  JsonObject aer = other.createNestedObject("aeration_timer");
-  aer["enabled"] = appConfig.aerationTimerEnabled;
-  aer["interval"] = appConfig.aerationInterval;
-  aer["duration"] = appConfig.aerationDuration;
+  JsonObject bathSetpoint = config.createNestedObject("bath_setpoint");
+  bathSetpoint["enabled"] = appConfig.bathSetEnabled;
+  bathSetpoint["target"] = appConfig.bathSetTarget;
+  bathSetpoint["hyst"] = appConfig.bathSetHyst;
 
   String bootMsg;
   serializeJson(bootDoc, bootMsg);
 
-  bool ok = publishData(getTelemetryTopic(), bootMsg, 10000);
+  // 发送到 register topic
+  bool ok = publishData(getRegisterTopic(), bootMsg, 10000);
   Serial.println(ok ? "[MQTT] 上线消息发送成功" : "[MQTT] 上线消息发送失败");
   Serial.println("[MQTT] Payload: " + bootMsg);
 

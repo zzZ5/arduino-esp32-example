@@ -14,21 +14,21 @@ struct AppConfig {
 	String mqttPass;
 	String mqttClientId;
 
+	// 设备代码（用于生成 MQTT topic）
+	String deviceCode;
+
+	// 自动生成的 MQTT topics
+	String mqttPostTopic() const {
+		return "compostlab/v2/" + deviceCode + "/telemetry";
+	}
+	String mqttResponseTopic() const {
+		return "compostlab/v2/" + deviceCode + "/response";
+	}
+
 	std::vector<String> ntpServers;
 
 	uint32_t pumpRunTime;
 	uint32_t readInterval;
-
-	// 设备key
-	String equipmentKey;
-
-	// 自动生成的 MQTT topics
-	String mqttPostTopic() const {
-		return "compostlab/v2/" + equipmentKey + "/telemetry";
-	}
-	String mqttResponseTopic() const {
-		return "compostlab/v2/" + equipmentKey + "/response";
-	}
 };
 
 extern AppConfig appConfig;

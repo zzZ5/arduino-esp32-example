@@ -3,7 +3,7 @@
 #include <OneWire.h>
 #include <DallasTemperature.h>
 #include "DFRobot_EOxygenSensor.h"
-#include "SHT30.h"   // ★ SHT30 温湿度传感器
+#include "Adafruit_SHT31.h"   // ★ Adafruit SHT31 温湿度传感器
 
 // ========== 全局变量 ==========
 
@@ -18,8 +18,8 @@ static DFRobot_EOxygenSensor_I2C o2sensor(&Wire, 0x70);
 static OneWire* oneWire = nullptr;
 static DallasTemperature* dallas = nullptr;
 
-// SHT30（I2C 温湿度传感器）
-static SHT30 sht30(&Wire, 0x44);  // SHT30 I2C 地址: 0x44
+// SHT31（I2C 温湿度传感器）
+Adafruit_SHT31 sht31 = Adafruit_SHT31();  // I2C 地址: 0x44
 
 // 泵引脚
 static int exhaustPinGlobal = -1;
@@ -50,8 +50,10 @@ bool initSensorAndPump(int exhaustPin, int aerationPin,
 	mhz_tx = txPin;
 	mhzSerial->begin(9600, SERIAL_8N1, mhz_rx, mhz_tx);
 
-	// ---- O2 ----
+	// ---- I2C 初始化（O2 和 SHT31 共用） ----
 	Wire.begin();
+
+	// ---- O2 ----
 	while (!o2sensor.begin()) {
 		Serial.println("[O2] Sensor not detected, retrying...");
 		delay(500);
@@ -63,18 +65,18 @@ bool initSensorAndPump(int exhaustPin, int aerationPin,
 	dallas = new DallasTemperature(oneWire);
 	dallas->begin();
 
-	// ---- SHT30（I2C 温湿度传感器） ----
-	while (!sht30.begin()) {
-		Serial.println("[SHT30] Sensor not detected, retrying...");
+	// ---- SHT31（I2C 温湿度传感器） ----
+	if (!sht31.begin(0x44)) {
+		Serial.println("[SHT31] Sensor not detected, retrying...");
 		delay(500);
 	}
-	Serial.println("[SHT30] Sensor initialized");
+	Serial.println("[SHT31] Sensor initialized");
 
 	// 测试读取
-	float testTemp = sht30.readTemperature();
-	float testHum = sht30.readHumidity();
+	float testTemp = sht31.readTemperature();
+	float testHum = sht31.readHumidity();
 	if (isnan(testTemp) || isnan(testHum)) {
-		Serial.println("[SHT30] Init WARNING: first read failed (will retry later)");
+		Serial.println("[SHT31] Init WARNING: first read failed (will retry later)");
 	}
 
 	// ---- 超时 ----
@@ -157,28 +159,9 @@ float readDS18B20() {
 }
 
 
-// ========== FDS100 ==========
-float readFDS100(int pin) {
-	if (pin < 0 || pin > 39) return -1.0;
-
-	int adc = analogRead(pin);
-	// ADC 范围检查
-	if (adc < 0 || adc > 4095) return -1.0;
-
-	float voltage = adc * 3.3 / 4095.0;
-	float mois = (voltage / 2.0) * 100.0;
-
-	// 边界检查
-	if (mois < 0.0) mois = 0.0;
-	if (mois > 100.0) mois = 100.0;
-
-	return mois;
-}
-
-
-// ========== SHT30（I2C 温湿度传感器） ==========
+// ========== SHT31（I2C 温湿度传感器） ==========
 float readSHT30Temp() {
-	float temp = sht30.readTemperature();
+	float temp = sht31.readTemperature();
 
 	// 检查是否读取失败
 	if (isnan(temp) || temp < -40.0 || temp > 125.0) {
@@ -188,7 +171,7 @@ float readSHT30Temp() {
 }
 
 float readSHT30Hum() {
-	float hum = sht30.readHumidity();
+	float hum = sht31.readHumidity();
 
 	// 检查是否读取失败
 	if (isnan(hum) || hum < 0.0 || hum > 100.0) {

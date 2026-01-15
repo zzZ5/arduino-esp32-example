@@ -38,10 +38,10 @@ bool loadConfigFromSPIFFS(const char* path) {
 		appConfig.mqttUser = "";
 		appConfig.mqttPass = "";
 		appConfig.mqttClientId = "esp32";
+		appConfig.deviceCode = "SmartCompost001";
 		appConfig.ntpServers = {"ntp.aliyun.com", "cn.ntp.org.cn"};
 		appConfig.pumpRunTime = 60000;
 		appConfig.readInterval = 60000;
-		appConfig.equipmentKey = "SmartCompost001";
 
 		return true;
 	}
@@ -70,7 +70,8 @@ bool loadConfigFromSPIFFS(const char* path) {
 	appConfig.mqttUser = doc["mqtt"]["user"] | "";
 	appConfig.mqttPass = doc["mqtt"]["pass"] | "";
 	appConfig.mqttClientId = doc["mqtt"]["clientId"] | "esp32";
-	// post_topic 和 response_topic 现在自动根据 equipment_key 生成
+	appConfig.deviceCode = doc["mqtt"]["device_code"] | "SmartCompost001";
+	// post_topic 和 response_topic 现在自动根据 device_code 生成
 
 	// NTP servers
 	appConfig.ntpServers.clear();
@@ -91,9 +92,6 @@ bool loadConfigFromSPIFFS(const char* path) {
 	appConfig.pumpRunTime = doc["pump_run_time"] | 60000;
 	appConfig.readInterval = doc["read_interval"] | 600000;
 
-	// keys
-	appConfig.equipmentKey = doc["equipment_key"] | "";
-
 	return true;
 }
 
@@ -110,7 +108,8 @@ bool saveConfigToSPIFFS(const char* path) {
 	doc["mqtt"]["user"] = appConfig.mqttUser;
 	doc["mqtt"]["pass"] = appConfig.mqttPass;
 	doc["mqtt"]["clientId"] = appConfig.mqttClientId;
-	// post_topic 和 response_topic 根据 equipment_key 自动生成，不需要保存
+	doc["mqtt"]["device_code"] = appConfig.deviceCode;
+	// post_topic 和 response_topic 根据 device_code 自动生成，不需要保存
 
 	// NTP
 	JsonArray ntpArr = doc.createNestedArray("ntp_servers");
@@ -120,9 +119,6 @@ bool saveConfigToSPIFFS(const char* path) {
 	// 控制参数
 	doc["pump_run_time"] = appConfig.pumpRunTime;
 	doc["read_interval"] = appConfig.readInterval;
-
-	// keys
-	doc["equipment_key"] = appConfig.equipmentKey;
 
 	// 写回文件
 	File file = SPIFFS.open(path, FILE_WRITE);
@@ -146,7 +142,7 @@ void printConfig(const AppConfig& cfg) {
 
 	Serial.println("WiFi SSID: " + cfg.wifiSSID);
 	Serial.println("MQTT Server: " + cfg.mqttServer);
-	Serial.println("Equipment Key: " + cfg.equipmentKey);
+	Serial.println("Device Code: " + cfg.deviceCode);
 
 	Serial.println("---------------------");
 }

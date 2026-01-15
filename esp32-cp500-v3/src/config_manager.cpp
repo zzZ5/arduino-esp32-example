@@ -248,6 +248,10 @@ String getResponseTopic() {
 	return String("compostlab/v2/") + appConfig.mqttDeviceCode + "/response";
 }
 
+String getRegisterTopic() {
+	return String("compostlab/v2/") + appConfig.mqttDeviceCode + "/register";
+}
+
 bool saveConfigToSPIFFS(const char* path) {
 	File file = SPIFFS.open(path, "w");
 	if (!file) {

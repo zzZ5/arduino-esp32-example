@@ -22,6 +22,7 @@
 - 🌡️ **外浴温度上限**：超过上限时强制冷却（关加热+关泵）
 - ⏱️ **最小开/关机时间**：保护加热器，延长设备寿命
 - 📊 **ADAPTIVE_TOUT 学习**：根据上一轮泵助热效果自适应调整阈值
+- 🚨 **紧急停止功能**：立即终止所有设备运行并锁定系统（最高优先级）
 
 ### 通信与配置
 - 📶 **WiFi 连接**：支持自动重连
@@ -356,7 +357,6 @@ pio run --target uploadfs
 
 ```json
 {
-  "device": "H3w8flPrdA",
   "commands": [
     {
       "command": "config_update",
@@ -374,6 +374,7 @@ pio run --target uploadfs
 - 只需发送要修改的部分，未指定的字段保持不变
 - 配置更新后设备会自动重启
 - 部分参数（如 WiFi、MQTT）建议使用方式一修改
+- 命令不需要 `device` 字段
 
 ### 配置验证
 
@@ -474,24 +475,41 @@ pio run --target uploadfs
 
 ### 上线消息 (Boot)
 
-**Topic**: `compostlab/v2/{device_code}/telemetry`
+**Topic**: `compostlab/v2/{device_code}/register`
 
 **格式**:
 ```json
 {
   "schema_version": 2,
-  "ts": "2026-01-11 12:00:00",
-  "device": "H3w8flPrdA",
-  "status": "online",
-  "last_measure_time": "2026-01-11 11:59:30",
-  "other": {
-    "mode": "setpoint",
-    "post_interval": 60000,
-    "temp_limits": {
-      "out_max": 65,
-      "out_min": 25,
-      "in_max": 70,
-      "in_min": 25
+  "timestamp": "2026-01-15 12:00:00",
+  "ip_address": "192.168.1.100",
+  "config": {
+    "wifi": {
+      "ssid": "Compostlab",
+      "password": "********"
+    },
+    "mqtt": {
+      "server": "118.25.108.254",
+      "port": 1883,
+      "user": "equipment",
+      "pass": "********",
+      "device_code": "H3w8flPrdA"
+    },
+    "ntp_servers": [
+      "ntp.ntsc.ac.cn",
+      "ntp.aliyun.com",
+      "cn.ntp.org.cn"
+    ],
+    "read_interval": 60000,
+    "temp_limitout_max": 65,
+    "temp_limitin_max": 70,
+    "temp_limitout_min": 25,
+    "temp_limitin_min": 25,
+    "temp_maxdif": 13,
+    "aeration_timer": {
+      "enabled": true,
+      "interval": 300000,
+      "duration": 300000
     },
     "safety": {
       "tank_temp_max": 90.0
@@ -506,15 +524,19 @@ pio run --target uploadfs
       "hyst_nom": 3.0,
       "ncurve_gamma": 1.3
     },
+    "pump_learning": {
+      "step_up": 0.5,
+      "step_down": 0.2,
+      "max": 10.0,
+      "progress_min": 0.05
+    },
+    "curves": {
+      "in_diff_ncurve_gamma": 2.0
+    },
     "bath_setpoint": {
       "enabled": true,
       "target": 65.0,
       "hyst": 0.8
-    },
-    "aeration_timer": {
-      "enabled": true,
-      "interval": 300000,
-      "duration": 300000
     }
   }
 }
@@ -527,7 +549,6 @@ pio run --target uploadfs
 **格式**:
 ```json
 {
-  "device": "H3w8flPrdA",
   "commands": [
     {
       "command": "heater",
@@ -540,7 +561,7 @@ pio run --target uploadfs
       "duration": 60000
     },
     {
-      "command": "fan",
+      "command": "aeration",
       "action": "on",
       "duration": 120000
     }
@@ -556,6 +577,41 @@ pio run --target uploadfs
 | `pump` | 水泵控制 |
 | `fan` | 曝气控制（映射到 aeration） |
 | `aeration` | 曝气控制（兼容） |
+| `emergency` | 紧急停止控制（最高优先级，无需 device 字段） |
+
+### 紧急停止命令
+
+**激活急停**：
+```json
+{
+  "commands": [
+    {
+      "command": "emergency",
+      "action": "on"
+    }
+  ]
+}
+```
+
+**恢复系统**：
+```json
+{
+  "commands": [
+    {
+      "command": "emergency",
+      "action": "off"
+    }
+  ]
+}
+```
+
+**急停功能说明**：
+- 激活急停后，立即关闭所有设备（加热器、水泵、曝气）
+- 系统进入锁定状态，拒绝所有其他控制命令
+- 温度测量和数据上报继续工作
+- 只有急停恢复命令能解除锁定
+- 急停命令不需要 `device` 字段，优先级最高
+- 详细说明请参考 [EMERGENCY_STOP.md](EMERGENCY_STOP.md)
 
 ## 温控模式详解
 
@@ -630,6 +686,534 @@ pio run --target uploadfs
 - 软锁在 `duration` 到期后自动释放
 - 持续时间为 0 时表示永久锁定
 
+### 紧急停止机制（最高优先级）
+- 急停激活后立即关闭所有设备
+- 阻断所有自动控制逻辑
+- 拒绝所有手动命令（除急停恢复命令外）
+- 温度测量和数据上报继续工作
+- 系统保持锁定状态直到收到明确的启动指令
+- 适用于设备异常、安全事故、紧急维护等场景
+- 详细说明请参考 [EMERGENCY_STOP.md](EMERGENCY_STOP.md)
+
+### 紧急停止机制（最高优先级）
+- 急停激活后立即关闭所有设备
+- 阻断所有自动控制逻辑
+- 拒绝所有手动命令（除急停恢复命令外）
+- 温度测量和数据上报继续工作
+- 系统保持锁定状态直到收到明确的启动指令
+- 适用于设备异常、安全事故、紧急维护等场景
+- 详细说明请参考 [EMERGENCY_STOP.md](EMERGENCY_STOP.md)
+
+## 系统控制逻辑详解
+
+### 整体控制流程
+
+系统采用分层优先级的控制架构，从高到低依次为：
+
+```
+1. 紧急停止（最高优先级）
+2. 安全保护（外浴超上限、水箱过热）
+3. 手动控制软锁
+4. 自动控制逻辑（Setpoint / n-curve）
+5. 设备执行层（加热器防抖、曝气定时）
+```
+
+### 详细控制步骤
+
+#### 第一步：急停状态检查（最高优先级）
+
+```cpp
+if (shouldBlockControl()) {
+  // 急停状态下：
+  // 1. 跳过所有自动控制逻辑
+  // 2. 仍进行温度测量
+  // 3. 仍上报数据（包含急停状态）
+  // 4. 拒绝所有手动命令
+  return;
+}
+```
+
+**执行条件**：
+- 收到 `{"command": "emergency", "action": "on"}` 命令后激活
+- 直到收到 `{"command": "emergency", "action": "off"}` 命令才解除
+
+#### 第二步：温度采集与预处理
+
+```cpp
+// 1. 读取核心温度 t_in
+float t_in = readTempIn();
+
+// 2. 读取外浴多个探头温度
+std::vector<float> t_outs = readTempOut();
+
+// 3. 读取水箱温度
+float t_tank = readTempTank();
+
+// 4. 计算外浴温度中位数（去噪）
+float med_out = median(t_outs, -20.0f, 100.0f, 5.0f);
+
+// 5. 判断水箱温度有效性
+bool tankValid = !isnan(t_tank) && (t_tank > -10.0f) && (t_tank < 120.0f);
+bool tankOver = tankValid && (t_tank >= tank_temp_max);
+
+// 6. 计算热差
+float delta_tank_out = tankValid ? (t_tank - med_out) : 0.0f;
+```
+
+#### 第三步：外浴硬保护检查（安全优先级）
+
+```cpp
+bool hardCool = false;
+String msgSafety;
+
+if (med_out >= temp_limitout_max) {
+  hardCool = true;
+  msgSafety = "[SAFETY] 外部温度超过上限，强制冷却（关加热+关泵）";
+}
+```
+
+**触发条件**：外浴中位温度 `med_out >= temp_limitout_max`
+
+**执行动作**：
+- 立即关闭加热器
+- 立即关闭循环泵
+- 清除所有手动软锁
+- 覆盖控制原因为安全提示
+
+#### 第四步：ADAPTIVE_TOUT 学习机制
+
+```cpp
+// 记录上一周期加热器/水泵状态
+bool prevHeaterOn = heaterIsOn;
+bool prevPumpOn = pumpIsOn;
+
+// 如果上一周期是"仅泵运行"（heater 关，pump 开）
+if (!prevHeaterOn && prevPumpOn) {
+  float dT_out = med_out - gLastToutMed;
+
+  if (dT_out >= pump_progress_min) {
+    // 泵有效：外浴升温，降低开启阈值
+    gPumpDeltaBoost = max(0.0f, gPumpDeltaBoost - pump_learn_step_down);
+  } else {
+    // 泵无效：外浴未升温，提高开启阈值
+    gPumpDeltaBoost = min(pump_learn_max, gPumpDeltaBoost + pump_learn_step_up);
+  }
+} else {
+  // 非仅泵运行：缓慢回落
+  gPumpDeltaBoost = max(0.0f, gPumpDeltaBoost - pump_learn_step_down);
+}
+
+// 计算自适应阈值
+computePumpDeltas(t_in, in_min, in_max, DELTA_ON, DELTA_OFF);
+```
+
+**学习逻辑**：
+- 仅在"上一周期仅泵运行"时进行学习
+- 泵有效（升温 ≥ progress_min）：降低 Δ_on 阈值
+- 泵无效（升温 < progress_min）：提高 Δ_on 阈值
+- 非仅泵运行时：缓慢回落补偿值
+
+#### 第五步：Setpoint 模式控制（如果启用）
+
+```cpp
+if (!hardCool && bath_setpoint.enabled) {
+  float tgt = bath_setpoint.target;
+  float hyst = bath_setpoint.hyst;
+
+  // 1. 判断温度状态
+  bool bathLow = (med_out < tgt - hyst);   // 温度过低
+  bool bathHigh = (med_out > tgt + hyst);  // 温度过高
+  bool bathOk = (!bathLow && !bathHigh);  // 温度合适
+
+  // 2. 根据 bathLow/bathHigh/bathOk 决定加热策略
+  if (bathLow) {
+    if (!tankValid) {
+      // 安全：无水箱温度，禁止加热
+      targetHeat = false;
+      targetPump = false;
+    } else if (t_tank < tgt + DELTA_ON) {
+      // 水箱不够热：加热水箱
+      targetHeat = true;
+      targetPump = (delta_tank_out > 0.5f);
+    } else {
+      // 水箱足够热：加热+泵
+      targetHeat = true;
+      targetPump = (delta_tank_out > DELTA_ON);
+    }
+  } else if (bathHigh) {
+    // 温度过高：全停
+    targetHeat = false;
+    targetPump = false;
+  } else if (bathOk) {
+    // 温度合适：仅泵微调（可选）
+    targetHeat = false;
+    targetPump = (tankValid && delta_tank_out > DELTA_ON);
+  }
+}
+```
+
+**决策矩阵**：
+
+| 状态 | 水箱有效 | 水箱温度 | 加热器 | 泵 |
+|------|---------|---------|--------|-----|
+| bathLow | 否 | - | 关 | 关 |
+| bathLow | 是 | < target + Δ_on | 开 | 关（或开，如果 tankΔ > 0.5）|
+| bathLow | 是 | ≥ target + Δ_on | 开 | 开（如果 tankΔ > Δ_on）|
+| bathHigh | - | - | 关 | 关 |
+| bathOk | 否 | - | 关 | 关 |
+| bathOk | 是 | - | 关 | 开（如果 tankΔ > Δ_on）|
+
+#### 第六步：n-curve 模式控制（如果 Setpoint 未启用）
+
+```cpp
+if (!hardCool && !bath_setpoint.enabled) {
+  // 1. 判断是否需要补热
+  bool bathWantHeat = false;
+
+  if (t_in < in_min) {
+    // 核心温度过低：强制补热
+    bathWantHeat = true;
+  } else {
+    // 根据温差阈值判断
+    float u = (t_in - in_min) / (in_max - in_min);
+    float diff_min = max(0.1f, temp_maxdif * 0.02f);
+    float DIFF_THR = diff_min + (temp_maxdif - diff_min) * pow(u, in_diff_ncurve_gamma);
+    bathWantHeat = (diff_now > DIFF_THR);
+  }
+
+  // 2. 初始加热决策
+  targetHeat = bathWantHeat;
+
+  // 3. 预热水箱（如果热差不足）
+  if (tankValid && !targetHeat && !tankOver && delta_tank_out < DELTA_ON) {
+    targetHeat = true;
+  }
+
+  // 4. 结合水箱热差决定泵策略
+  if (tankValid && bathWantHeat && !tankOver) {
+    if (delta_tank_out > DELTA_ON) {
+      targetPump = true;
+      targetHeat = true;
+    } else if (delta_tank_out > DELTA_OFF) {
+      targetPump = pumpIsOn;  // 保持当前状态
+    } else {
+      targetPump = false;
+    }
+  }
+}
+```
+
+**决策矩阵**：
+
+| 条件 | bathWantHeat | tankΔ > Δ_on | tankΔ > Δ_off | 加热器 | 泵 |
+|------|-------------|--------------|--------------|--------|-----|
+| t_in < in_min | true | - | - | 开 | 视 tankΔ |
+| diff_now > DIFF_THR | true | 是 | - | 开 | 开 |
+| diff_now > DIFF_THR | true | 否 | 是 | 开 | 保持 |
+| diff_now > DIFF_THR | true | 否 | 否 | 开 | 关 |
+| diff_now ≤ DIFF_THR | false | 是（且需预热水箱） | - | 开 | 关 |
+| diff_now ≤ DIFF_THR | false | 否 | - | 关 | 关 |
+
+#### 第七步：手动控制软锁检查
+
+```cpp
+unsigned long nowMs = millis();
+bool heaterManualActive = (heaterManualUntilMs != 0 && (nowMs - heaterManualUntilMs) < 0);
+bool pumpManualActive = (pumpManualUntilMs != 0 && (nowMs - pumpManualUntilMs) < 0);
+
+if (heaterManualActive) {
+  targetHeat = heaterIsOn;  // 保持当前状态
+  reason += " | 手动加热锁生效";
+}
+
+if (pumpManualActive) {
+  targetPump = pumpIsOn;  // 保持当前状态
+  reason += " | 手动泵锁生效";
+}
+```
+
+**作用**：
+- 手动命令后设置软锁
+- 自动控制不主动改变被锁定的设备
+- 软锁在 duration 到期后自动释放
+
+#### 第八步：水箱温度安全检查
+
+```cpp
+if (!tankValid || tankOver) {
+  if (targetHeat) {
+    reason += " | Tank≥上限/无读数：强制停热";
+  }
+  targetHeat = false;
+
+  if (heaterIsOn) {
+    heaterOff();
+    heaterIsOn = false;
+    heaterToggleMs = millis();
+    Serial.println("[SAFETY] Tank 温度无效或过高，强制关闭加热");
+  }
+}
+```
+
+**触发条件**：
+- 水箱温度无效（NaN 或超出范围）
+- 水箱温度 ≥ `tank_temp_max`
+
+**执行动作**：
+- 强制关闭加热器
+- 阻止自动开启加热器
+- 允许手动加热命令（但会被拦截）
+
+#### 第九步：加热器防抖执行
+
+```cpp
+unsigned long nowMs2 = millis();
+unsigned long elapsed = nowMs2 - heaterToggleMs;
+
+if (targetHeat) {
+  if (!heaterIsOn) {
+    if (elapsed >= heater_min_off_ms) {
+      heaterOn();
+      heaterIsOn = true;
+      heaterToggleMs = nowMs2;
+    } else {
+      reason += " | 抑制开热：未到最小关断间隔";
+    }
+  }
+} else {
+  if (heaterIsOn) {
+    if (elapsed >= heater_min_on_ms) {
+      heaterOff();
+      heaterIsOn = false;
+      heaterToggleMs = nowMs2;
+    } else {
+      reason += " | 抑制关热：未到最小开机时间";
+    }
+  }
+}
+```
+
+**防抖规则**：
+- 开机后至少运行 `heater_min_on_ms` 才能关闭
+- 关机后至少等待 `heater_min_off_ms` 才能再次开启
+- 保护设备寿命，防止频繁启停
+
+#### 第十步：水泵控制执行
+
+```cpp
+if (targetPump) {
+  if (!pumpIsOn) {
+    pumpOn();
+    pumpIsOn = true;
+  }
+} else {
+  if (pumpIsOn) {
+    pumpOff();
+    pumpIsOn = false;
+  }
+}
+```
+
+**水泵特点**：
+- 无最小开/关机时间限制
+- 可以与加热器同时运行
+- 响应速度快
+
+#### 第十一步：定时曝气控制
+
+```cpp
+void checkAndControlAerationByTimer() {
+  if (!aerationTimer.enabled) return;
+  if (aerationManualUntilMs != 0 && (millis() - aerationManualUntilMs) < 0) return;
+
+  unsigned long nowMs = millis();
+
+  // 到达曝气时间
+  if (!aerationIsOn && (nowMs - preAerationMs >= aerationInterval)) {
+    aerationOn();
+    aerationIsOn = true;
+    preAerationMs = nowMs;
+  }
+
+  // 曝气时间到
+  if (aerationIsOn && (nowMs - preAerationMs >= aerationDuration)) {
+    aerationOff();
+    aerationIsOn = false;
+    preAerationMs = nowMs;
+  }
+}
+```
+
+**曝气逻辑**：
+- 仅在 `aerationTimer.enabled = true` 时生效
+- 尊重手动软锁（手动命令优先）
+- 周期性启动和关闭
+
+#### 第十二步：数据上报
+
+```cpp
+JsonDocument doc;
+doc["schema_version"] = 2;
+doc["ts"] = timestamp;
+
+JsonArray channels = doc.createNestedArray("channels");
+// 添加：TempIn, TempOut1-3, TankTemp, Heater, Pump, Aeration, EmergencyState
+
+String payload;
+serializeJson(doc, payload);
+publishData(getTelemetryTopic(), payload, 10000);
+```
+
+**上报内容**：
+- 所有温度传感器数据
+- 设备状态（Heater, Pump, Aeration）
+- 急停状态（EmergencyState）
+- 时间戳和模式标签
+
+### 命令处理流程
+
+#### MQTT 命令优先级
+
+```cpp
+void mqttCallback(char* topic, byte* payload, unsigned int length) {
+  // 1. 解析 JSON
+  JsonDocument doc;
+  deserializeJson(doc, payload, length);
+
+  JsonArray cmds = doc["commands"].as<JsonArray>();
+
+  for (each command in cmds) {
+    String cmd = command["command"];
+    String action = command["action"];
+    unsigned long duration = command["duration"];
+
+    // 2. 紧急停止命令（最高优先级，无需 device 检查）
+    if (cmd == "emergency") {
+      if (action == "on") {
+        activateEmergencyStop();
+      } else if (action == "off") {
+        resumeFromEmergencyStop();
+      }
+      continue;
+    }
+
+    // 3. 其他命令：急停状态下拒绝执行
+    if (isEmergencyStopped()) {
+      continue;  // 拒绝执行
+    }
+
+    // 4. 普通命令处理
+    if (cmd == "heater") { /* 处理加热命令 */ }
+    if (cmd == "pump") { /* 处理泵命令 */ }
+    if (cmd == "aeration" || cmd == "fan") { /* 处理曝气命令 */ }
+    if (cmd == "config_update") { /* 处理配置更新 */ }
+  }
+}
+```
+
+#### 手动命令执行流程
+
+```cpp
+void executeCommand(const PendingCommand& pcmd) {
+  // 1. 急停检查
+  if (isEmergencyStopped()) {
+    return;  // 拒绝执行
+  }
+
+  // 2. Tank 安全检查（仅加热命令）
+  if (pcmd.cmd == "heater" && pcmd.action == "on") {
+    if (!gLastTankValid || gLastTankOver) {
+      Serial.println("[SAFETY] 手动加热命令被拦截：Tank 无效或过温");
+      return;
+    }
+  }
+
+  // 3. 执行命令
+  if (pcmd.cmd == "heater") {
+    heaterOn();
+    heaterIsOn = true;
+    heaterToggleMs = millis();
+    heaterManualUntilMs = duration > 0 ? millis() + duration : 0;
+  }
+
+  // 4. 如果有 duration，添加定时关闭命令
+  if (duration > 0) {
+    scheduleOff(pcmd.cmd, duration);
+  }
+}
+```
+
+### 多任务调度
+
+系统使用 FreeRTOS 实现多任务并发：
+
+```cpp
+// 任务 1：测量与控制任务（Core 1）
+void measurementTask(void* pv) {
+  while (true) {
+    if (millis() - prevMeasureMs >= postInterval) {
+      doMeasurementAndSave();
+    }
+    vTaskDelay(500 / portTICK_PERIOD_MS);
+  }
+}
+
+// 任务 2：命令调度任务（Core 1）
+void commandTask(void* pv) {
+  while (true) {
+    time_t now = time(nullptr);
+
+    // 遍历命令队列
+    for (int i = 0; i < pendingCommands.size(); i++) {
+      if (now >= pendingCommands[i].targetTime) {
+        executeCommand(pendingCommands[i]);
+        pendingCommands.erase(i);
+      }
+    }
+
+    vTaskDelay(200 / portTICK_PERIOD_MS);
+  }
+}
+
+// 主循环：MQTT 维护（Core 0）
+void loop() {
+  maintainMQTT(5000);
+  delay(100);
+}
+```
+
+**任务分工**：
+- **Core 0**: 主循环（MQTT 保持连接）
+- **Core 1**: 测量任务 + 命令调度任务
+- **互斥保护**: 命令队列使用 `gCmdMutex` 保护
+
+### 状态保存与恢复
+
+系统使用 NVS（非易失性存储）保存关键状态：
+
+```cpp
+// 保存内容：
+- NVS_KEY_LAST_MEAS: 上次测量时间（秒）
+- NVS_KEY_LAST_AERATION: 上次曝气时间（秒）
+
+// 恢复逻辑（启动时）：
+if (preferences.begin(NVS_NAMESPACE, true)) {
+  unsigned long lastSecAera = preferences.getULong(NVS_KEY_LAST_AERATION, 0);
+
+  if (lastSecAera > 0) {
+    // 计算上次曝气到现在的 elapsed 时间
+    preAerationMs = millis() - (nowSec - lastSecAera) * 1000;
+  }
+
+  preferences.end();
+}
+```
+
+**作用**：
+- 重启后恢复测量/曝气节拍
+- 避免重启后立即触发动作
+- 保持控制逻辑的连续性
+
 ## 故障排查
 
 ### 设备无法连接 WiFi
@@ -663,11 +1247,14 @@ esp32-cp500-v3/
 │   ├── sensor.h            # 传感器接口
 │   ├── sensor.cpp          # 传感器实现
 │   ├── wifi_ntp_mqtt.h    # 网络和 MQTT 头文件
-│   └── wifi_ntp_mqtt.cpp  # 网络和 MQTT 实现
+│   ├── wifi_ntp_mqtt.cpp  # 网络和 MQTT 实现
+│   ├── emergency_stop.h    # 紧急停止模块头文件
+│   └── emergency_stop.cpp  # 紧急停止模块实现
 ├── data/                  # SPIFFS 数据文件
 │   └── config.json        # 配置文件
 ├── platformio.ini          # PlatformIO 配置
-└── README.md              # 本文档
+├── README.md              # 本文档
+└── EMERGENCY_STOP.md      # 紧急停止功能说明
 ```
 
 ## 技术支持
@@ -678,6 +1265,7 @@ esp32-cp500-v3/
 
 | 版本 | 日期 | 说明 |
 |-----|------|------|
+| 3.1 | 2026-01-15 | 新增紧急停止功能（最高优先级安全保护） |
 | 3.0 | 2026-01-11 | 重构为 schema_version 2，支持 channels 数组格式 |
 | 2.0 | 2026-01-11 | 简化配置，自动生成 MQTT topic |
 | 1.0 | 2026-01-11 | 初始版本 |

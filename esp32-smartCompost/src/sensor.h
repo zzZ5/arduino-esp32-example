@@ -33,7 +33,6 @@ void aerationOff();
 int   readMHZ16();         // CO₂ 浓度（ppm）
 float readEOxygen();       // O₂ 浓度（%）
 float readDS18B20();       // DS18B20 物料温度（°C）
-float readFDS100(int pin); // 含水率（%）
 
 // SHT30（I2C 温湿度传感器）
 float readSHT30Temp();     // 气体温度（°C）

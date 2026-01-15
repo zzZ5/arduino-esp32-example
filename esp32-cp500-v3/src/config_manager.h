@@ -71,5 +71,6 @@ void printConfig(const AppConfig& cfg);
 // 获取 MQTT topic（基于 device_code 自动构建）
 String getTelemetryTopic();   // compostlab/v2/{device_code}/telemetry
 String getResponseTopic();    // compostlab/v2/{device_code}/response
+String getRegisterTopic();   // compostlab/v2/{device_code}/register
 
 #endif
