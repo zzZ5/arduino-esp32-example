@@ -102,6 +102,8 @@ static void fillConfigJson(JsonObject cfg) {
 // topic: compostlab/v2/{device_code}/register
 // =====================================================
 static void publishOnlineWithConfig() {
+  Serial.println("[Register] 准备发布上线消息...");
+
   JsonDocument doc;
   doc["schema_version"] = 2;
 
@@ -112,17 +114,27 @@ static void publishOnlineWithConfig() {
     doc["ip_address"] = "0.0.0.0";
   }
 
-  doc["timestamp"] = getTimeString();
+  String timestamp = getTimeString();
+  doc["timestamp"] = timestamp;
+  Serial.printf("[Register] Timestamp: %s\n", timestamp.c_str());
 
   JsonObject cfg = doc["config"].to<JsonObject>();
   fillConfigJson(cfg);
 
   String out;
   serializeJson(doc, out);
+  Serial.printf("[Register] Payload size: %d bytes\n", out.length());
 
   // 使用注册 topic: compostlab/v2/{device_code}/register
   String registerTopic = "compostlab/v2/" + appConfig.deviceCode + "/register";
-  publishData(registerTopic, out, 10000);
+  Serial.printf("[Register] Topic: %s\n", registerTopic.c_str());
+
+  bool result = publishData(registerTopic, out, 10000);
+  if (result) {
+    Serial.println("[Register] 上线消息发布成功！");
+  } else {
+    Serial.println("[Register] 上线消息发布失败！");
+  }
 }
 
 // =====================================================
@@ -459,6 +471,9 @@ static bool doMeasurementAndSave() {
 // 任务：定时测量
 // =====================================================
 static void measurementTask(void*) {
+  // 启动后延迟，确保与上线消息之间至少间隔 1000ms
+  delay(1000);
+
   while (true) {
     // 使用无符号差值,避免 millis 溢出问题
     if ((millis() - prevMeasureMs) >= appConfig.readInterval) {
@@ -539,7 +554,12 @@ void setup() {
   readMHZ16();
   delay(500);
 
-  // 5) 恢复上次测量时间（确保重启后按照间隔时间测量）
+  // 5) 发布上线消息（先告知服务器设备已上线）
+  Serial.println("[System] 发布上线消息...");
+  publishOnlineWithConfig();
+  delay(500);  // 等待上线消息完全发送
+
+  // 6) 恢复上次测量时间（确保重启后按照间隔时间测量）
   if (preferences.begin(NVS_NAMESPACE, false)) {
     unsigned long lastSec = preferences.getULong(NVS_KEY_LAST_MEAS, 0);
     time_t nowSec = time(nullptr);
@@ -572,9 +592,6 @@ void setup() {
     // NVS 失败，从现在开始
     prevMeasureMs = millis();
   }
-
-  // 6) 上线消息：带完整配置（关键！）
-  publishOnlineWithConfig();
 
   // 7) 启动任务
   xTaskCreatePinnedToCore(measurementTask, "Measure", 8192, NULL, 1, NULL, 1);

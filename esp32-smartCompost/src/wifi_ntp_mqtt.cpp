@@ -98,18 +98,18 @@ bool multiNTPSetup(unsigned long totalTimeoutMs) {
 
 /**
  * @brief 获取当前时间的字符串格式
- * 如果 NTP 未同步，返回空字符串而不是 "1970-01-01 00:00:00"
+ * 如果 NTP 未同步，返回默认时间字符串
  */
 String getTimeString() {
 	struct tm tinfo;
 	if (!getLocalTime(&tinfo)) {
-		// NTP 未同步，返回空字符串
-		return "";
+		// NTP 未同步，返回默认时间
+		return "1970-01-01 00:00:00";
 	}
 
 	// 检查时间是否有效（1970 年表示未同步）
 	if (tinfo.tm_year < 120) {  // 2020年以前认为未同步
-		return "";
+		return "1970-01-01 00:00:00";
 	}
 
 	char buf[20];

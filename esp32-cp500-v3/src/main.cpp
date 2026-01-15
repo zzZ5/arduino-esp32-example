@@ -62,6 +62,7 @@
  */
 
 #include <Arduino.h>
+#include <WiFi.h>
 #include <Preferences.h>
 #include <time.h>
 #include "config_manager.h"
@@ -1091,38 +1092,6 @@ void setup() {
 
   gCmdMutex = xSemaphoreCreateMutex();
 
-  // 恢复测量/曝气节拍（用 NVS 里的 "上次事件时间" 推算相位）
-  if (preferences.begin(NVS_NAMESPACE, /*readOnly=*/true)) {
-    unsigned long lastSecMea = preferences.getULong(NVS_KEY_LAST_MEAS, 0);
-    unsigned long lastSecAera = preferences.getULong(NVS_KEY_LAST_AERATION, 0);
-    time_t nowSec = time(nullptr);
-
-    if (nowSec > 0 && lastSecAera > 0) {
-      unsigned long long elapsedAeraMs64 = (unsigned long long)(nowSec - lastSecAera) * 1000ULL;
-      preAerationMs = millis() - (unsigned long)elapsedAeraMs64;
-    }
-    else {
-      preAerationMs = millis() - appConfig.aerationInterval;
-    }
-
-    if (nowSec > 0 && lastSecMea > 0) {
-      unsigned long intervalSec = appConfig.postInterval / 1000UL;
-      unsigned long elapsedSec = (nowSec > lastSecMea) ? (nowSec - lastSecMea) : 0UL;
-      if (elapsedSec >= intervalSec)
-        prevMeasureMs = millis() - appConfig.postInterval;
-      else
-        prevMeasureMs = millis() - (appConfig.postInterval - elapsedSec * 1000UL);
-    }
-    else {
-      prevMeasureMs = millis() - appConfig.postInterval;
-    }
-    preferences.end();
-  }
-  else {
-    prevMeasureMs = millis() - appConfig.postInterval;
-    preAerationMs = millis() - appConfig.aerationInterval;
-  }
-
   // ============ 上线消息（带控制配置信息） ============
   String nowStr = getTimeString();
   String lastMeasStr = "unknown";
@@ -1226,6 +1195,41 @@ void setup() {
   bool ok = publishData(getRegisterTopic(), bootMsg, 10000);
   Serial.println(ok ? "[MQTT] 上线消息发送成功" : "[MQTT] 上线消息发送失败");
   Serial.println("[MQTT] Payload: " + bootMsg);
+
+  // 等待一段时间，避免与后续遥测消息发送过近
+  delay(500);
+
+  // 恢复测量/曝气节拍（用 NVS 里的 "上次事件时间" 推算相位）
+  if (preferences.begin(NVS_NAMESPACE, /*readOnly=*/true)) {
+    unsigned long lastSecMea = preferences.getULong(NVS_KEY_LAST_MEAS, 0);
+    unsigned long lastSecAera = preferences.getULong(NVS_KEY_LAST_AERATION, 0);
+    time_t nowSec = time(nullptr);
+
+    if (nowSec > 0 && lastSecAera > 0) {
+      unsigned long long elapsedAeraMs64 = (unsigned long long)(nowSec - lastSecAera) * 1000ULL;
+      preAerationMs = millis() - (unsigned long)elapsedAeraMs64;
+    }
+    else {
+      preAerationMs = millis() - appConfig.aerationInterval;
+    }
+
+    if (nowSec > 0 && lastSecMea > 0) {
+      unsigned long intervalSec = appConfig.postInterval / 1000UL;
+      unsigned long elapsedSec = (nowSec > lastSecMea) ? (nowSec - lastSecMea) : 0UL;
+      if (elapsedSec >= intervalSec)
+        prevMeasureMs = millis() - appConfig.postInterval;
+      else
+        prevMeasureMs = millis() - (appConfig.postInterval - elapsedSec * 1000UL);
+    }
+    else {
+      prevMeasureMs = millis() - appConfig.postInterval;
+    }
+    preferences.end();
+  }
+  else {
+    prevMeasureMs = millis() - appConfig.postInterval;
+    preAerationMs = millis() - appConfig.aerationInterval;
+  }
 
   // 后台任务
   xTaskCreatePinnedToCore(measurementTask, "MeasureTask", 8192, NULL, 1, NULL, 1);
