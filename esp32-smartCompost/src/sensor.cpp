@@ -61,16 +61,26 @@ bool initSensorAndPump(int exhaustPin, int aerationPin,
 	Serial.println("[O2] Sensor initialized");
 
 	// ---- DS18B20 ----
-	oneWire = new OneWire(4);
+	// 使用引脚 4 作为 DS18B20 的数据线
+	const int ds18b20Pin = 4;
+	oneWire = new OneWire(ds18b20Pin);
 	dallas = new DallasTemperature(oneWire);
 	dallas->begin();
 
 	// ---- SHT31（I2C 温湿度传感器） ----
-	if (!sht31.begin(0x44)) {
-		Serial.println("[SHT31] Sensor not detected, retrying...");
+	int sht31Retries = 0;
+	while (!sht31.begin(0x44)) {
+		sht31Retries++;
+		Serial.printf("[SHT31] Sensor not detected, retry %d...\n", sht31Retries);
+		if (sht31Retries >= 5) {
+			Serial.println("[SHT31] WARNING: SHT31 init failed after 5 retries");
+			break;
+		}
 		delay(500);
 	}
-	Serial.println("[SHT31] Sensor initialized");
+	if (sht31Retries < 5) {
+		Serial.println("[SHT31] Sensor initialized");
+	}
 
 	// 测试读取
 	float testTemp = sht31.readTemperature();

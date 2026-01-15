@@ -3,7 +3,7 @@
 // 目标：
 // 1) 与 config_manager.cpp 的字段/含义保持一致：pump_run_time、read_interval、mqtt(post_topic/response_topic)、ntp_servers、keys( CO2/O2/RoomTemp/AirTemp/AirHumidity )
 // 2) MQTT 指令统一入口：restart / aeration / exhaust / config_update
-// 3) 第一次连接 MQTT 后发布上线消息，同时把“完整当前配置”一并上传
+// 3) 第一次连接 MQTT 后发布上线消息，同时把"完整当前配置"一并上传
 // 4) config_update 只更新指令里出现的字段，其它保持原状；保存到 /config.json 后重启生效
 //
 // 依赖：
@@ -70,19 +70,22 @@ static time_t parseScheduleOrNow(const String& schedule) {
 }
 
 // =====================================================
-// 生成“完整当前配置”的 JSON（用于上线/回执）
+// 生成"完整当前配置"的 JSON（用于上线/回执）
+// 格式：{ "wifi": {...}, "mqtt": {...}, "ntp_servers": [...], "pump_run_time": ..., "read_interval": ... }
 // =====================================================
 static void fillConfigJson(JsonObject cfg) {
   // WiFi
-  cfg["wifi_ssid"] = appConfig.wifiSSID;
+  JsonObject wifi = cfg["wifi"].to<JsonObject>();
+  wifi["ssid"] = appConfig.wifiSSID;
+  wifi["password"] = appConfig.wifiPass;
 
   // MQTT
-  cfg["mqtt_server"] = appConfig.mqttServer;
-  cfg["mqtt_port"] = appConfig.mqttPort;
-  cfg["mqtt_user"] = appConfig.mqttUser;
-  cfg["mqtt_clientId"] = appConfig.mqttClientId;
-  cfg["post_topic"] = appConfig.mqttPostTopic();
-  cfg["response_topic"] = appConfig.mqttResponseTopic();
+  JsonObject mqtt = cfg["mqtt"].to<JsonObject>();
+  mqtt["server"] = appConfig.mqttServer;
+  mqtt["port"] = appConfig.mqttPort;
+  mqtt["user"] = appConfig.mqttUser;
+  mqtt["pass"] = appConfig.mqttPass;
+  mqtt["device_code"] = appConfig.deviceCode;
 
   // NTP servers
   JsonArray ntps = cfg["ntp_servers"].to<JsonArray>();
@@ -91,18 +94,23 @@ static void fillConfigJson(JsonObject cfg) {
   // 控制参数
   cfg["pump_run_time"] = appConfig.pumpRunTime;
   cfg["read_interval"] = appConfig.readInterval;
-
-  // 设备标识
-  cfg["device_code"] = appConfig.deviceCode;
 }
 
 // =====================================================
 // 发布上线消息（带完整配置）
+// topic: compostlab/v2/{device_code}/register
 // =====================================================
 static void publishOnlineWithConfig() {
   JsonDocument doc;
-  doc["device"] = appConfig.deviceCode;
-  doc["status"] = "online";
+  doc["schema_version"] = 2;
+
+  // 检查 WiFi 连接状态，避免获取到 0.0.0.0
+  if (WiFi.status() == WL_CONNECTED) {
+    doc["ip_address"] = WiFi.localIP().toString();
+  } else {
+    doc["ip_address"] = "0.0.0.0";
+  }
+
   doc["timestamp"] = getTimeString();
 
   JsonObject cfg = doc["config"].to<JsonObject>();
@@ -111,7 +119,9 @@ static void publishOnlineWithConfig() {
   String out;
   serializeJson(doc, out);
 
-  publishData(appConfig.mqttPostTopic(), out, 10000);
+  // 使用注册 topic: compostlab/v2/{device_code}/register
+  String registerTopic = "compostlab/v2/" + appConfig.deviceCode + "/register";
+  publishData(registerTopic, out, 10000);
 }
 
 // =====================================================
@@ -190,6 +200,7 @@ static bool updateAppConfigFromJson(JsonObject cfg) {
 
 // =====================================================
 // 执行控制命令（普通控制：aeration/exhaust/restart）
+// 注意：对于长时间的操作，会阻塞任务执行，建议 duration 不要太大
 // =====================================================
 static void executeCommand(const PendingCommand& pcmd) {
   Serial.printf("[CMD] 执行：%s %s (持续 %lu ms)\n",
@@ -208,7 +219,15 @@ static void executeCommand(const PendingCommand& pcmd) {
     if (pcmd.action == "on") {
       aerationOn();
       if (pcmd.duration > 0) {
-        delay(pcmd.duration);
+        // 对于长时间操作，分段 delay 避免 watchdog 触发
+        unsigned long remaining = pcmd.duration;
+        while (remaining > 0) {
+          unsigned long chunk = min(remaining, (unsigned long)5000);
+          delay(chunk);
+          remaining -= chunk;
+          // 喂狗，防止 watchdog 复位
+          yield();
+        }
         aerationOff();
       }
     }
@@ -223,7 +242,15 @@ static void executeCommand(const PendingCommand& pcmd) {
     if (pcmd.action == "on") {
       exhaustPumpOn();
       if (pcmd.duration > 0) {
-        delay(pcmd.duration);
+        // 对于长时间操作，分段 delay 避免 watchdog 触发
+        unsigned long remaining = pcmd.duration;
+        while (remaining > 0) {
+          unsigned long chunk = min(remaining, (unsigned long)5000);
+          delay(chunk);
+          remaining -= chunk;
+          // 喂狗，防止 watchdog 触发
+          yield();
+        }
         exhaustPumpOff();
       }
     }
@@ -294,12 +321,8 @@ static void mqttCallback(char* topic, byte* payload, unsigned int length) {
 
       Serial.println("[CFG] 配置已保存,3 秒后重启生效");
 
-      // 非阻塞延迟重启
-      unsigned long restartStart = millis();
-      while (millis() - restartStart < 3000) {
-        maintainMQTT(100);  // 保持 MQTT 连接
-        delay(100);
-      }
+      // 简单延迟重启，避免递归调用 maintainMQTT
+      delay(3000);
       ESP.restart();
       return;
     }
