@@ -217,7 +217,11 @@ void aerationOn() {
 		while (pct != to) {
 			writeDutyPctImmediate(pct);
 			pct += dir;
-			while ((millis() - last) < (unsigned long)stepDelay) { delay(1); }
+			// 使用 delayMicroseconds 减少阻塞时间（注意：yield() 允许后台任务）
+			while ((millis() - last) < (unsigned long)stepDelay) {
+				delayMicroseconds(1000);  // 1ms
+				yield();  // 允许 FreeRTOS 任务切换
+			}
 			last += stepDelay;
 		}
 		writeDutyPctImmediate(to);
@@ -243,7 +247,11 @@ void aerationOff() {
 		while (pct != to) {
 			writeDutyPctImmediate(pct);
 			pct += dir;
-			while ((millis() - last) < (unsigned long)stepDelay) { delay(1); }
+			// 使用 delayMicroseconds 减少阻塞时间（注意：yield() 允许后台任务）
+			while ((millis() - last) < (unsigned long)stepDelay) {
+				delayMicroseconds(1000);  // 1ms
+				yield();  // 允许 FreeRTOS 任务切换
+			}
 			last += stepDelay;
 		}
 		writeDutyPctImmediate(0);

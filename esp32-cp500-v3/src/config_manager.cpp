@@ -45,7 +45,12 @@ static void fillDefaultsIfNeeded(AppConfig& c) {
 	// 若用户未配置该分组，保持关闭，但给出合理默认参数，便于后续远程启用
 	// target 默认 45℃、回差 0.8℃
 	// 注意：main.cpp 会在运行时将 target 夹紧到 < tempLimitOutMax
-	c.bathSetEnabled = c.bathSetEnabled; // 若未写入，保持 false（全局静态默认是随机的，这里不依赖）
+	if (c.bathSetEnabled) {
+		// 保持用户配置的 enabled 状态
+	} else {
+		// 未配置时默认关闭
+		c.bathSetEnabled = false;
+	}
 	if (c.bathSetTarget <= 0) c.bathSetTarget = 45.0f;
 	if (c.bathSetHyst <= 0) c.bathSetHyst = 0.8f;
 }
@@ -263,13 +268,13 @@ bool saveConfigToSPIFFS(const char* path) {
 
 	// —— WiFi ——
 	doc["wifi"]["ssid"] = appConfig.wifiSSID;
-	doc["wifi"]["password"] = appConfig.wifiPass;
+	doc["wifi"]["password"] = appConfig.wifiPass;  // TODO: 考虑使用 ESP32 NVS 加密存储敏感信息
 
 	// —— MQTT ——
 	doc["mqtt"]["server"] = appConfig.mqttServer;
 	doc["mqtt"]["port"] = appConfig.mqttPort;
 	doc["mqtt"]["user"] = appConfig.mqttUser;
-	doc["mqtt"]["pass"] = appConfig.mqttPass;
+	doc["mqtt"]["pass"] = appConfig.mqttPass;  // TODO: 考虑使用 ESP32 NVS 加密存储敏感信息
 	doc["mqtt"]["device_code"] = appConfig.mqttDeviceCode;
 
 	// —— NTP ——

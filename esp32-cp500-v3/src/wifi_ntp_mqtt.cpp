@@ -97,8 +97,19 @@ bool multiNTPSetup(unsigned long totalTimeoutMs) {
 
 	// 设置时区：东八区
 	configTime(8 * 3600, 0, appConfig.ntpServers[0].c_str());
-	Serial.println("[NTP] Timezone set to UTC+8");
-	return true;
+
+	// 验证时间是否有效（确保时区设置后时间仍然有效）
+	struct tm tinfo;
+	if (getLocalTime(&tinfo)) {
+		Serial.println("[NTP] Timezone set to UTC+8, time validated");
+		Serial.printf("[NTP] Current time: %04d-%02d-%02d %02d:%02d:%02d\n",
+			tinfo.tm_year + 1900, tinfo.tm_mon + 1, tinfo.tm_mday,
+			tinfo.tm_hour, tinfo.tm_min, tinfo.tm_sec);
+		return true;
+	} else {
+		Serial.println("[NTP] Timezone set but time validation failed!");
+		return false;
+	}
 }
 
 /**

@@ -11,7 +11,7 @@
  *   - 只加热（heater-only）
  *   - 只泵助热（pump-only）
  *   - 加热 + 泵同时运行（heater + pump）
- * - ADAPTIVE_TOUT：通过“上一周期泵-only 是否有效升温”自适应调整仅泵助热阈值 Δ_on
+ * - ADAPTIVE_TOUT：通过"上一周期泵-only 是否有效升温"自适应调整仅泵助热阈值 Δ_on
  * - Tank 安全：
  *   - Tank 温度无效或过高 → 自动控制绝不加热，并强制关闭正在加热的加热器
  *   - 手动 heater on 命令在 Tank 无效或过高时亦被硬拦截
@@ -117,38 +117,40 @@ static bool gLastTankValid = false;  // 上一轮测量中 Tank 是否有效
 static bool gLastTankOver = false;  // 上一轮测量中 Tank 是否超上限
 
 // ========================= 工具：鲁棒中位数（含离群剔除） =========================
-float median(std::vector<float> values,
+// 注意：函数会修改输入的 values 副本（按值传递），不影响原变量
+float median(const std::vector<float>& values,
   float minValid = TEMP_VALID_MIN,
   float maxValid = TEMP_VALID_MAX,
   float outlierThreshold = -1.0f) {
-  // 第一步：过滤无效值
-  values.erase(std::remove_if(values.begin(), values.end(), [&](float v) {
+  // 第一步：复制并过滤无效值
+  std::vector<float> filtered = values;
+  filtered.erase(std::remove_if(filtered.begin(), filtered.end(), [&](float v) {
     return isnan(v) || v < minValid || v > maxValid;
-    }), values.end());
+    }), filtered.end());
 
-  if (values.empty()) return NAN;
+  if (filtered.empty()) return NAN;
 
   // 第二步：如果有离群值阈值，先计算中位数并过滤
   if (outlierThreshold > 0) {
-    std::sort(values.begin(), values.end());
-    size_t mid = values.size() / 2;
-    float med0 = (values.size() % 2 == 0)
-      ? (values[mid - 1] + values[mid]) / 2.0f
-      : values[mid];
+    std::sort(filtered.begin(), filtered.end());
+    size_t mid = filtered.size() / 2;
+    float med0 = (filtered.size() % 2 == 0)
+      ? (filtered[mid - 1] + filtered[mid]) / 2.0f
+      : filtered[mid];
 
-    values.erase(std::remove_if(values.begin(), values.end(), [&](float v) {
+    filtered.erase(std::remove_if(filtered.begin(), filtered.end(), [&](float v) {
       return fabsf(v - med0) > outlierThreshold;
-      }), values.end());
+      }), filtered.end());
 
-    if (values.empty()) return NAN;
+    if (filtered.empty()) return NAN;
   }
 
   // 第三步：最终排序并返回中位数（只排序一次）
-  std::sort(values.begin(), values.end());
-  size_t mid = values.size() / 2;
-  return (values.size() % 2 == 0)
-    ? (values[mid - 1] + values[mid]) / 2.0f
-    : values[mid];
+  std::sort(filtered.begin(), filtered.end());
+  size_t mid = filtered.size() / 2;
+  return (filtered.size() % 2 == 0)
+    ? (filtered[mid - 1] + filtered[mid]) / 2.0f
+    : filtered[mid];
 }
 
 // ========================= [ADAPTIVE_TOUT] 仅泵助热阈值：自适应 + 学习补偿 =========================
@@ -156,6 +158,41 @@ static float gPumpDeltaBoost = 0.0f;  // 学习补偿（0..appConfig.pumpLearnMa
 static float gLastToutMed = NAN;   // 上一轮 t_out 的中位温（用于判断仅泵是否带来升温）
 
 inline float lerp_f(float a, float b, float t) { return a + (b - a) * t; }
+
+// 工具函数：安全地判断是否到达手动软锁截止时间
+// 使用减法而不是加法,避免 millis 溢出问题
+// 返回 true 表示仍在锁定期内
+static inline bool isManualLockActive(unsigned long lockUntilMs) {
+  if (lockUntilMs == 0) return false;
+  unsigned long nowMs = millis();
+  // 如果 lockUntilMs > nowMs,说明还没到截止时间
+  // 如果发生溢出,lockUntilMs 会很小,但 nowMs 也会很小,所以比较仍然正确
+  return (lockUntilMs - nowMs) < 0x80000000UL;  // 检查差值是否在 2^31 范围内
+}
+
+// 公共函数：Tank 温度安全检查
+// 如果 Tank 温度无效或过高，强制关闭加热器并阻止自动开启
+// 返回值：true 表示加热被阻止
+static bool applyTankSafetyCheck(bool tankValid, bool tankOver, bool& targetHeat, String& reason) {
+  bool heatBlocked = false;
+
+  if (!tankValid || tankOver) {
+    if (targetHeat) {
+      reason += " | Tank≥上限/无读数：强制停热";
+    }
+    targetHeat = false;
+    heatBlocked = true;
+
+    if (heaterIsOn) {
+      heaterOff();
+      heaterIsOn = false;
+      heaterToggleMs = millis();
+      Serial.println("[SAFETY] Tank 温度无效或过高，强制关闭加热");
+    }
+  }
+
+  return heatBlocked;
+}
 
 // 根据 t_in 在 [in_min, in_max] 的相对位置计算自适应 Δ_on / Δ_off（Δ_off 随 Δ_on 比例回差）
 static void computePumpDeltas(float t_in, float in_min, float in_max,
@@ -165,7 +202,7 @@ static void computePumpDeltas(float t_in, float in_min, float in_max,
     };
   const float MAX_ALLOWED = appConfig.pumpDeltaOnMax + appConfig.pumpLearnMax;
 
-  // 把“名义回差（℃）”换算成“比例”：在 Δ_on≈中值时，回差≈appConfig.pumpHystNom
+  // 把"名义回差（℃）"换算成"比例"：在 Δ_on≈中值时，回差≈appConfig.pumpHystNom
   const float mid_on = 0.5f * (appConfig.pumpDeltaOnMin + appConfig.pumpDeltaOnMax);
   const float hyst_rat = (mid_on > 0.1f) ? (appConfig.pumpHystNom / mid_on) : 0.2f;
 
@@ -514,7 +551,7 @@ void executeCommand(const PendingCommand& pcmd) {
 // ========================= 定时曝气控制 =========================
 void checkAndControlAerationByTimer() {
   if (!appConfig.aerationTimerEnabled) return;
-  if (aerationManualUntilMs != 0 && (long)(millis() - aerationManualUntilMs) < 0) return;
+  if (isManualLockActive(aerationManualUntilMs)) return;
 
   unsigned long nowMs = millis();
   time_t nowEpoch = time(nullptr);
@@ -679,7 +716,7 @@ bool doMeasurementAndSave() {
     return false;
   }
 
-  // 记录“上一周期”加热器 / 水泵状态，用于 ADAPTIVE_TOUT 学习
+  // 记录"上一周期"加热器 / 水泵状态，用于 ADAPTIVE_TOUT 学习
   bool prevHeaterOn = heaterIsOn;
   bool prevPumpOn = pumpIsOn;
 
@@ -712,27 +749,34 @@ bool doMeasurementAndSave() {
       "，强制冷却（关加热+关泵）";
   }
 
-  // *** [ADAPTIVE_TOUT] 学习：仅在“上一周期为泵-only”时依据 dT_out 调整 boost ***
+  // *** [ADAPTIVE_TOUT] 学习：仅在"上一周期为泵-only"时依据 dT_out 调整 boost ***
+  // 增加边界情况处理：如果系统从未进入"仅泵运行"状态，通过缓慢回落机制启动学习
   if (!isnan(gLastToutMed)) {
     float dT_out = med_out - gLastToutMed;
     bool pumpOnlyPrev = (prevPumpOn && !prevHeaterOn);
     if (pumpOnlyPrev) {
+      // 上一周期仅泵运行：根据升温效果调整 boost
       if (dT_out < appConfig.pumpProgressMin) {
+        // 泵无效：提高阈值，增加 pumpLearnStepUp
         gPumpDeltaBoost = fminf(appConfig.pumpLearnMax,
           gPumpDeltaBoost + appConfig.pumpLearnStepUp);
       }
       else {
+        // 泵有效：降低阈值，减少 pumpLearnStepDown
         gPumpDeltaBoost = fmaxf(0.0f,
           gPumpDeltaBoost - appConfig.pumpLearnStepDown);
       }
     }
     else {
+      // 非仅泵运行：缓慢回落 boost 值，允许系统逐渐适应
       gPumpDeltaBoost = fmaxf(0.0f,
         gPumpDeltaBoost - appConfig.pumpLearnStepDown);
     }
+  } else {
+    // 首次运行：gLastToutMed 为 NaN，无需学习，等待下一轮
   }
 
-  // [ADAPTIVE_TOUT] 计算“仅泵助热”的自适应阈值 Δ_on / Δ_off（仍用 t_in 上下限归一化）
+  // [ADAPTIVE_TOUT] 计算"仅泵助热"的自适应阈值 Δ_on / Δ_off（仍用 t_in 上下限归一化）
   float DELTA_ON = 0.0f;
   float DELTA_OFF = 0.0f;
   computePumpDeltas(t_in, in_min, in_max, DELTA_ON, DELTA_OFF);
@@ -780,7 +824,7 @@ bool doMeasurementAndSave() {
           }
         }
         else {
-          // 水箱已经足够热：视为“热源充足”
+          // 水箱已经足够热：视为"热源充足"
           if (delta_tank_out > DELTA_ON) {
             targetHeat = true;
             targetPump = true;
@@ -823,11 +867,8 @@ bool doMeasurementAndSave() {
     }
 
     // 手动控制软锁优先：自动逻辑不主动改动被锁定设备
-    unsigned long nowMs = millis();
-    bool heaterManualActive = (heaterManualUntilMs != 0 &&
-      (long)(nowMs - heaterManualUntilMs) < 0);
-    bool pumpManualActive = (pumpManualUntilMs != 0 &&
-      (long)(nowMs - pumpManualUntilMs) < 0);
+    bool heaterManualActive = isManualLockActive(heaterManualUntilMs);
+    bool pumpManualActive = isManualLockActive(pumpManualUntilMs);
     if (heaterManualActive) {
       targetHeat = heaterIsOn;
       reason += " | 手动加热锁生效";
@@ -838,18 +879,7 @@ bool doMeasurementAndSave() {
     }
 
     // Tank 安全：温度无效或过高时停止加热
-    if (!tankValid || tankOver) {
-      if (targetHeat) {
-        reason += " | Tank≥上限/无读数：停热";
-      }
-      targetHeat = false;
-      if (heaterIsOn) {
-        heaterOff();
-        heaterIsOn = false;
-        heaterToggleMs = millis();
-        Serial.println("[SAFETY] Tank 温度无效或过高，强制关闭加热");
-      }
-    }
+    applyTankSafetyCheck(tankValid, tankOver, targetHeat, reason);
 
     // 统一执行加热 + 泵控制
     applyHeaterPumpTargets(targetHeat, targetPump, hardCool, msgSafety, reason);
@@ -875,7 +905,7 @@ bool doMeasurementAndSave() {
 
   if (!hardCool) {
 
-    bool bathWantHeat = false;  // 是否“希望补热”（由 diff_now 与单阈值判定）
+    bool bathWantHeat = false;  // 是否"希望补热"（由 diff_now 与单阈值判定）
 
     if (t_in < in_min) {
       bathWantHeat = true;
@@ -902,35 +932,10 @@ bool doMeasurementAndSave() {
     // 初始期望加热：由 bathWantHeat 决定
     targetHeat = bathWantHeat;
 
-    unsigned long nowMs = millis();
-    bool heaterManualActive = (heaterManualUntilMs != 0 &&
-      (long)(nowMs - heaterManualUntilMs) < 0);
-    bool pumpManualActive = (pumpManualUntilMs != 0 &&
-      (long)(nowMs - pumpManualUntilMs) < 0);
-    if (heaterManualActive) {
-      targetHeat = heaterIsOn;
-      reason += " | 手动加热锁生效";
-    }
-    if (pumpManualActive) {
-      targetPump = pumpIsOn;
-      reason += " | 手动泵锁生效";
-    }
-
     // 水箱上限/无效：强制停热
-    if (!tankValid || tankOver) {
-      if (targetHeat) {
-        reason += " | Tank≥上限/无读数：强制停热";
-      }
-      targetHeat = false;
-      if (heaterIsOn) {
-        heaterOff();
-        heaterIsOn = false;
-        heaterToggleMs = millis();
-        Serial.println("[SAFETY] Tank 温度无效或过高，强制关闭加热");
-      }
-    }
+    applyTankSafetyCheck(tankValid, tankOver, targetHeat, reason);
 
-    // 若当前不满足“可随时泵助热”的条件，则优先把水箱加热到 Δ_on
+    // 若当前不满足"可随时泵助热"的条件，则优先把水箱加热到 Δ_on
     if (tankValid && !targetHeat && !tankOver && (delta_tank_out < DELTA_ON)) {
       targetHeat = true;
       reason += " | tankΔ=" + String(delta_tank_out, 1) +
@@ -938,10 +943,27 @@ bool doMeasurementAndSave() {
         "℃ → 预热水箱";
     }
 
-    // 泵助热 vs 加热：以 Δ_out 的 Δ_on/Δ_off 判据，允许“加热+泵”并行
-    if (tankValid && bathWantHeat && !tankOver) {
+    // 手动控制软锁检查（在所有控制逻辑之后，确保手动命令优先级最高）
+    bool heaterManualActive = isManualLockActive(heaterManualUntilMs);
+    bool pumpManualActive = isManualLockActive(pumpManualUntilMs);
+    if (heaterManualActive) {
+      targetHeat = heaterIsOn;
+      reason += " | 手动加热锁生效";
+    }
+
+    // 泵助热 vs 加热：以 Δ_out 的 Δ_on/Δ_off 判据，允许"加热+泵"并行
+    // 先初始化 targetPump 默认值
+    if (!pumpManualActive) {
+      targetPump = false;
+    } else {
+      targetPump = pumpIsOn;
+      reason += " | 手动泵锁生效";
+    }
+
+    // 根据条件更新 targetPump（仅在非手动锁状态下）
+    if (!pumpManualActive && tankValid && bathWantHeat && !tankOver) {
       if (delta_tank_out > DELTA_ON) {
-        // 水箱明显更热：优先“加热+泵”一起工作
+        // 水箱明显更热：优先"加热+泵"一起工作
         targetPump = true;
         targetHeat = true;
         reason += " | tankΔ=" + String(delta_tank_out, 1) +
@@ -960,11 +982,6 @@ bool doMeasurementAndSave() {
         reason += " | tankΔ=" + String(delta_tank_out, 1) +
           "℃ < Δ_off=" + String(DELTA_OFF, 1) +
           "℃ → 仅加热";
-      }
-    }
-    else if (!tankValid || !bathWantHeat) {
-      if (!pumpManualActive) {
-        targetPump = false;  // 无手动锁时自动倾向关闭泵，避免空转
       }
     }
 
@@ -1000,19 +1017,25 @@ void measurementTask(void* pv) {
 void commandTask(void* pv) {
   while (true) {
     time_t now = time(nullptr);
+
+    // 先收集需要执行的命令
+    std::vector<PendingCommand> readyToExecute;
     if (gCmdMutex && xSemaphoreTake(gCmdMutex, pdMS_TO_TICKS(200))) {
-      for (int i = 0; i < (int)pendingCommands.size(); ++i) {
+      // 从后往前遍历，避免删除元素时影响索引
+      for (int i = (int)pendingCommands.size() - 1; i >= 0; --i) {
         if (now >= pendingCommands[i].targetTime) {
-          PendingCommand pc = pendingCommands[i];
+          readyToExecute.push_back(pendingCommands[i]);
           pendingCommands.erase(pendingCommands.begin() + i);
-          --i;
-          xSemaphoreGive(gCmdMutex);
-          executeCommand(pc);
-          if (!xSemaphoreTake(gCmdMutex, pdMS_TO_TICKS(200))) break;
         }
       }
       xSemaphoreGive(gCmdMutex);
     }
+
+    // 在互斥量外执行命令，避免阻塞其他任务
+    for (const auto& cmd : readyToExecute) {
+      executeCommand(cmd);
+    }
+
     vTaskDelay(200 / portTICK_PERIOD_MS);
   }
 }
@@ -1027,17 +1050,35 @@ void setup() {
 
   if (!initSPIFFS() || !loadConfigFromSPIFFS("/config.json")) {
     Serial.println("[System] 配置加载失败，重启");
+    delay(1000);
     ESP.restart();
   }
   printConfig(appConfig);
 
+  // 网络/NTP 连接：失败后不再无限重启，而是进入安全模式
+  // 重启次数过多后进入"安全模式"，仅串口输出状态
+  static int restartCount = 0;
   if (!connectToWiFi(20000) || !multiNTPSetup(30000)) {
-    Serial.println("[System] 网络/NTP失败，重启");
-    ESP.restart();
-  }
-  if (!connectToMQTT(20000)) {
-    Serial.println("[System] MQTT失败，重启");
-    ESP.restart();
+    Serial.println("[System] 网络/NTP失败");
+    restartCount++;
+    if (restartCount < 3) {
+      Serial.printf("[System] 尝试重启（第 %d 次）...\n", restartCount);
+      delay(1000);
+      ESP.restart();
+    } else {
+      Serial.println("[System] 网络连接持续失败，进入安全模式");
+      Serial.println("[System] 系统将跳过网络连接，仅运行本地控制");
+      // 继续启动，跳过 MQTT 连接
+    }
+  } else {
+    // 网络成功，重置重启计数
+    restartCount = 0;
+
+    if (!connectToMQTT(20000)) {
+      Serial.println("[System] MQTT失败，但系统继续运行");
+      Serial.println("[System] 跳过 MQTT，启用本地控制模式");
+      // 不重启，继续运行本地控制
+    }
   }
 
   getMQTTClient().setCallback(mqttCallback);
@@ -1050,7 +1091,7 @@ void setup() {
 
   gCmdMutex = xSemaphoreCreateMutex();
 
-  // 恢复测量/曝气节拍（用 NVS 里的 “上次事件时间” 推算相位）
+  // 恢复测量/曝气节拍（用 NVS 里的 "上次事件时间" 推算相位）
   if (preferences.begin(NVS_NAMESPACE, /*readOnly=*/true)) {
     unsigned long lastSecMea = preferences.getULong(NVS_KEY_LAST_MEAS, 0);
     unsigned long lastSecAera = preferences.getULong(NVS_KEY_LAST_AERATION, 0);
