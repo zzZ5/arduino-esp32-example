@@ -478,7 +478,15 @@ static void measurementTask(void*) {
     // 使用无符号差值,避免 millis 溢出问题
     if ((millis() - prevMeasureMs) >= appConfig.readInterval) {
       prevMeasureMs = millis();
-      doMeasurementAndSave();
+
+      // 重试机制：最多尝试 3 次
+      for (int retry = 0; retry < 3; retry++) {
+        if (doMeasurementAndSave()) {
+          break;  // 成功则退出重试
+        }
+        Serial.printf("[Measure] Retry %d failed, waiting 5s...\n", retry + 1);
+        delay(5000);
+      }
     }
     vTaskDelay(500 / portTICK_PERIOD_MS);
   }

@@ -1,3 +1,4 @@
+// wifi_ntp_mqtt.cpp
 #include "wifi_ntp_mqtt.h"
 #include "config_manager.h"
 #include <WiFi.h>
@@ -7,9 +8,49 @@
 static WiFiClient espClient;
 PubSubClient mqttClient(espClient);
 
+// WiFi 保活状态
+static unsigned long lastWiFiCheck = 0;
+static const unsigned long WIFI_CHECK_INTERVAL = 30000;  // 30秒检查一次
+
+// WiFi 连接失败计数器
+static int wifiFailCount = 0;
+static const int WIFI_FAIL_LIMIT = 5;  // 连续失败5次后重启
+
 // 外部访问 MQTT 客户端引用
 PubSubClient& getMQTTClient() {
 	return mqttClient;
+}
+
+/**
+ * @brief 保持 WiFi 在线（自动重连）
+ */
+static void maintainWiFi() {
+	unsigned long now = millis();
+	if (now - lastWiFiCheck < WIFI_CHECK_INTERVAL) {
+		return;
+	}
+	lastWiFiCheck = now;
+
+	if (WiFi.status() != WL_CONNECTED) {
+		Serial.println("[WiFi] Disconnected, reconnecting...");
+		WiFi.disconnect();
+		delay(500);
+		if (!connectToWiFi(10000)) {
+			Serial.println("[WiFi] Reconnect failed");
+			wifiFailCount++;
+			Serial.printf("[WiFi] Fail count: %d/%d\n", wifiFailCount, WIFI_FAIL_LIMIT);
+
+			// 连续失败超过限制，重启设备
+			if (wifiFailCount >= WIFI_FAIL_LIMIT) {
+				Serial.println("[WiFi] Too many failures, restarting device...");
+				delay(1000);
+				ESP.restart();
+			}
+		} else {
+			// 连接成功，重置计数器
+			wifiFailCount = 0;
+		}
+	}
 }
 
 /**
@@ -165,10 +206,14 @@ bool connectToMQTT(unsigned long timeoutMs) {
 }
 
 /**
- * @brief 保持 MQTT 在线（重连 + loop）
+ * @brief 保持 MQTT 在线（WiFi保活 + 重连 + loop）
  */
 void maintainMQTT(unsigned long timeoutMs) {
+	// 先保持 WiFi 在线
+	maintainWiFi();
+
 	if (!mqttClient.connected()) {
+		Serial.println("[MQTT] Not connected, reconnecting...");
 		connectToMQTT(timeoutMs);
 	}
 	mqttClient.loop();
@@ -180,11 +225,15 @@ void maintainMQTT(unsigned long timeoutMs) {
 bool publishData(const String& topic, const String& payload, unsigned long timeoutMs) {
 	unsigned long start = millis();
 
+	// 先确保 WiFi 在线
+	maintainWiFi();
+
 	while (!mqttClient.connected()) {
 		if (millis() - start > timeoutMs) {
 			Serial.printf("[MQTT] publishData: connect timeout >%lu ms\n", timeoutMs);
 			return false;
 		}
+		maintainWiFi();
 		connectToMQTT(timeoutMs - (millis() - start));
 	}
 
@@ -198,6 +247,8 @@ bool publishData(const String& topic, const String& payload, unsigned long timeo
 			Serial.printf("[MQTT] Publish fail, state=%d. Retry in 300ms\n", mqttClient.state());
 			delay(300);
 
+			// 检查 WiFi 和 MQTT 连接
+			maintainWiFi();
 			if (!mqttClient.connected()) {
 				connectToMQTT(timeoutMs - (millis() - start));
 			}
