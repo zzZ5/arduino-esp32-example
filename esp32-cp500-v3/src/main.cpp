@@ -1079,11 +1079,12 @@ void setup() {
       Serial.println("[System] MQTT失败，但系统继续运行");
       Serial.println("[System] 跳过 MQTT，启用本地控制模式");
       // 不重启，继续运行本地控制
+    } else {
+      // MQTT连接成功后才设置回调
+      // 注意: subscribe已在connectToMQTT()中处理,这里不需要重复订阅
+      getMQTTClient().setCallback(mqttCallback);
     }
   }
-
-  getMQTTClient().setCallback(mqttCallback);
-  getMQTTClient().subscribe(getResponseTopic().c_str());
 
   if (!initSensors(4, 5, 25, 26, 27)) {
     Serial.println("[System] 传感器初始化失败，重启");
@@ -1241,6 +1242,7 @@ void setup() {
 
 // ========================= 主循环 =========================
 void loop() {
+  // 保持MQTT连接并处理心跳（高频调用）
   maintainMQTT(5000);
   delay(100);
 }
