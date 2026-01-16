@@ -484,11 +484,11 @@ static void measurementTask(void*) {
         if (doMeasurementAndSave()) {
           break;  // 成功则退出重试
         }
-        Serial.printf("[Measure] Retry %d failed, waiting 5s...\n", retry + 1);
-        delay(5000);
+        Serial.printf("[Measure] Retry %d failed, waiting 3s...\n", retry + 1);
+        delay(3000);  // 减少延迟时间
       }
     }
-    vTaskDelay(500 / portTICK_PERIOD_MS);
+    vTaskDelay(1000 / portTICK_PERIOD_MS);  // 增加检查频率
   }
 }
 
@@ -602,7 +602,7 @@ void setup() {
   }
 
   // 7) 启动任务
-  xTaskCreatePinnedToCore(measurementTask, "Measure", 8192, NULL, 1, NULL, 1);
+  xTaskCreatePinnedToCore(measurementTask, "Measure", 16384, NULL, 1, NULL, 1);
   xTaskCreatePinnedToCore(commandTask, "Command", 8192, NULL, 1, NULL, 1);
 
   Serial.println("[System] 初始化完成");
@@ -612,6 +612,6 @@ void setup() {
 // loop
 // =====================================================
 void loop() {
-  maintainMQTT(5000);
+  maintainMQTT(30000);  // 增加超时时间，给网络更多恢复时间
   delay(100);
 }

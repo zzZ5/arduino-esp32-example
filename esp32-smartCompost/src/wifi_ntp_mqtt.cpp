@@ -3,7 +3,6 @@
 #include "config_manager.h"
 #include <WiFi.h>
 #include <time.h>
-#include <HTTPClient.h>
 
 // 全局 WiFiClient 与 MQTT 客户端
 static WiFiClient espClient;
