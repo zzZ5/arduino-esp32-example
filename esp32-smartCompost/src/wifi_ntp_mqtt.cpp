@@ -3,6 +3,7 @@
 #include "config_manager.h"
 #include <WiFi.h>
 #include <time.h>
+#include <HTTPClient.h>
 
 // 全局 WiFiClient 与 MQTT 客户端
 static WiFiClient espClient;
@@ -16,9 +17,64 @@ static const unsigned long WIFI_CHECK_INTERVAL = 30000;  // 30秒检查一次
 static int wifiFailCount = 0;
 static const int WIFI_FAIL_LIMIT = 5;  // 连续失败5次后重启
 
+// 网络连通性检测
+static unsigned long lastNetworkCheck = 0;
+static const unsigned long NETWORK_CHECK_INTERVAL = 60000;  // 60秒检查一次
+static int networkFailCount = 0;
+static const int NETWORK_FAIL_LIMIT = 3;  // 连续失败3次后重启
+
 // 外部访问 MQTT 客户端引用
 PubSubClient& getMQTTClient() {
 	return mqttClient;
+}
+
+/**
+ * @brief 检测网络连通性（通过 ping 或 HTTP 请求）
+ */
+static bool checkNetworkConnectivity() {
+	// 尝试通过 DNS 解析检测连通性（不消耗流量）
+	IPAddress result;
+	if (WiFi.hostByName("www.baidu.com", result)) {
+		Serial.println("[Network] Connectivity OK (DNS resolved)");
+		return true;
+	}
+
+	// 如果 DNS 失败，尝试 MQTT 服务器连通性
+	if (WiFi.hostByName(appConfig.mqttServer.c_str(), result)) {
+		Serial.println("[Network] MQTT server reachable");
+		return true;
+	}
+
+	return false;
+}
+
+/**
+ * @brief 保持网络连通（检测无网络时重启）
+ */
+static void maintainNetwork() {
+	unsigned long now = millis();
+	if (now - lastNetworkCheck < NETWORK_CHECK_INTERVAL) {
+		return;
+	}
+	lastNetworkCheck = now;
+
+	// 只在 WiFi 已连接时检测网络
+	if (WiFi.status() != WL_CONNECTED) {
+		return;
+	}
+
+	if (!checkNetworkConnectivity()) {
+		networkFailCount++;
+		Serial.printf("[Network] No internet, fail count: %d/%d\n", networkFailCount, NETWORK_FAIL_LIMIT);
+
+		if (networkFailCount >= NETWORK_FAIL_LIMIT) {
+			Serial.println("[Network] No internet for too long, restarting...");
+			delay(1000);
+			ESP.restart();
+		}
+	} else {
+		networkFailCount = 0;  // 网络正常，重置计数器
+	}
 }
 
 /**
@@ -206,11 +262,14 @@ bool connectToMQTT(unsigned long timeoutMs) {
 }
 
 /**
- * @brief 保持 MQTT 在线（WiFi保活 + 重连 + loop）
+ * @brief 保持 MQTT 在线（WiFi保活 + 网络检测 + 重连 + loop）
  */
 void maintainMQTT(unsigned long timeoutMs) {
 	// 先保持 WiFi 在线
 	maintainWiFi();
+
+	// 检测网络连通性
+	maintainNetwork();
 
 	if (!mqttClient.connected()) {
 		Serial.println("[MQTT] Not connected, reconnecting...");
