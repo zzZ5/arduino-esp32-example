@@ -3,6 +3,7 @@
 #include "config_manager.h"
 #include <WiFi.h>
 #include <time.h>
+#include <HTTPClient.h>
 
 // 全局 WiFiClient 与 MQTT 客户端
 static WiFiClient espClient;
@@ -258,6 +259,53 @@ bool connectToMQTT(unsigned long timeoutMs) {
 	}
 
 	return false;
+}
+
+/**
+ * @brief 获取公网 IP 地址
+ * 通过外部服务查询，失败返回局域网 IP
+ */
+String getPublicIP() {
+	// 优先使用局域网 IP（如果设备直接在公网或使用端口转发）
+	String localIP = WiFi.localIP().toString();
+	Serial.printf("[IP] Local IP: %s\n", localIP.c_str());
+
+	// 尝试从多个服务获取公网 IP
+	const char* ipServices[] = {
+		"http://ifconfig.me/ip",
+		"http://icanhazip.com",
+		"http://ipecho.net/plain",
+		"http://api.ipify.org"
+	};
+
+	HTTPClient http;
+	http.setTimeout(5000);  // 5秒超时
+
+	for (const char* url : ipServices) {
+		if (WiFi.status() != WL_CONNECTED) {
+			break;
+		}
+
+		Serial.printf("[IP] Trying: %s\n", url);
+		if (http.begin(url)) {
+			int httpCode = http.GET();
+			if (httpCode == HTTP_CODE_OK) {
+				String publicIP = http.getString();
+				publicIP.trim();
+				http.end();
+
+				if (publicIP.length() > 0) {
+					Serial.printf("[IP] Public IP: %s\n", publicIP.c_str());
+					return publicIP;
+				}
+			}
+			http.end();
+		}
+		delay(500);
+	}
+
+	Serial.println("[IP] Failed to get public IP, using local IP");
+	return localIP;
 }
 
 /**

@@ -107,16 +107,14 @@ static void publishOnlineWithConfig() {
   JsonDocument doc;
   doc["schema_version"] = 2;
 
-  // 检查 WiFi 连接状态，避免获取到 0.0.0.0
-  if (WiFi.status() == WL_CONNECTED) {
-    doc["ip_address"] = WiFi.localIP().toString();
-  } else {
-    doc["ip_address"] = "0.0.0.0";
-  }
+  // 使用公网 IP 地址
+  String ipAddress = getPublicIP();
+  doc["ip_address"] = ipAddress;
 
   String timestamp = getTimeString();
   doc["timestamp"] = timestamp;
   Serial.printf("[Register] Timestamp: %s\n", timestamp.c_str());
+  Serial.printf("[Register] IP Address: %s\n", ipAddress.c_str());
 
   JsonObject cfg = doc["config"].to<JsonObject>();
   fillConfigJson(cfg);
