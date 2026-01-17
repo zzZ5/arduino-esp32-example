@@ -1,24 +1,32 @@
-#define SENSOR_PIN 4  // 使用 GPIO4（ADC）
+#include "MHZ16.h"
 
-const int airValue = 3700; // 空气中（最干）读数
-const int waterValue = 0;  // 水中（最湿）读数
+MHZ16 co2Sensor(Serial1, 16, 17);  // RX=16, TX=17
 
 void setup() {
-  Serial.begin(9600);
+  Serial.begin(115200);
+  co2Sensor.begin();
+
+  Serial.println("预热中（建议 ≥20分钟）...");
+  delay(900000);  // 实验用短延时，真实建议20分钟后校零
+
+  Serial.println("执行零点校准（确保环境为400ppm）...");
+  co2Sensor.calibrateZero();
+  delay(10000);  // 等待稳定
+  Serial.println("执行零点校准（确保环境为400ppm）...");
+  co2Sensor.calibrateZero();
+  delay(10000);  // 等待稳定
 }
 
 void loop() {
-  int sensorValue = analogRead(SENSOR_PIN);
+  int co2 = co2Sensor.readCO2();
+  if (co2 >= 0) {
+    Serial.print("CO₂: ");
+    Serial.print(co2);
+    Serial.println(" ppm");
+  }
+  else {
+    Serial.println("读取失败");
+  }
 
-  // 线性映射：干3700 → 0%，湿0 → 100%
-  int moisturePercent = map(sensorValue, airValue, waterValue, 0, 100);
-  moisturePercent = constrain(moisturePercent, 0, 100); // 限制在0~100%
-
-  Serial.print("Raw ADC: ");
-  Serial.print(sensorValue);
-  Serial.print(" => Soil Moisture: ");
-  Serial.print(moisturePercent);
-  Serial.println("%");
-
-  delay(1000); // 每秒输出一次
+  delay(2000);
 }
