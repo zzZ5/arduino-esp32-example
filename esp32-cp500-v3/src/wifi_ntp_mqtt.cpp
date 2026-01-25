@@ -255,6 +255,86 @@ String getTimeString() {
 }
 
 /**
+ * @brief 获取公网IP地址
+ * @return 公网IP字符串，失败则返回局域网IP
+ */
+String getPublicIP() {
+	// 优先返回局域网IP作为备份
+	String localIP = WiFi.localIP().toString();
+
+	// 多个公网IP查询服务
+	const char* services[] = {
+		"ifconfig.me",
+		"icanhazip.com",
+		"ipecho.net/plain",
+		"api.ipify.org"
+	};
+	const size_t numServices = sizeof(services) / sizeof(services[0]);
+
+	Serial.println("[PublicIP] Attempting to fetch public IP...");
+
+	for (size_t i = 0; i < numServices; i++) {
+		WiFiClient client;
+		const char* host = services[i];
+		int port = 80;  // HTTP端口
+
+		Serial.printf("[PublicIP] Trying service %d: %s\n", i + 1, host);
+
+		unsigned long start = millis();
+		if (client.connect(host, port)) {
+			// 发送HTTP GET请求
+			client.println("GET / HTTP/1.1");
+			client.print("Host: ");
+			client.println(host);
+			client.println("Connection: close");
+			client.println();
+
+			// 读取响应，超时5秒
+			String ip = "";
+			unsigned long timeoutStart = millis();
+			while (client.connected() && (millis() - timeoutStart < 5000)) {
+				if (client.available()) {
+					char c = client.read();
+					if (c != '\r' && c != '\n') {
+						ip += c;
+					}
+					// 如果已经读取到足够的数据，提前结束
+					if (ip.length() > 15) {  // IPv4最长15字符
+						break;
+					}
+				}
+				delay(10);
+			}
+			client.stop();
+
+			unsigned long elapsed = millis() - start;
+			Serial.printf("[PublicIP] Service %d: elapsed=%lu ms, result=%s\n",
+				i + 1, elapsed, ip.c_str());
+
+			// 验证IP格式（简单验证）
+			if (ip.length() >= 7 && ip.length() <= 15) {
+				// 检查是否包含3个点
+				int dotCount = 0;
+				for (size_t j = 0; j < ip.length(); j++) {
+					if (ip[j] == '.') dotCount++;
+				}
+				if (dotCount == 3) {
+					Serial.printf("[PublicIP] ✓ Public IP obtained: %s\n", ip.c_str());
+					return ip;
+				}
+			}
+		} else {
+			Serial.printf("[PublicIP] Service %d: connection failed\n", i + 1);
+		}
+		client.stop();
+	}
+
+	// 所有服务都失败，返回局域网IP
+	Serial.printf("[PublicIP] ✗ All services failed, returning local IP: %s\n", localIP.c_str());
+	return localIP;
+}
+
+/**
  * @brief 连接 MQTT 服务器（带指数退避重试）
  */
 bool connectToMQTT(unsigned long timeoutMs) {

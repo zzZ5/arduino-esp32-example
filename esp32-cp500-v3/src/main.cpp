@@ -677,6 +677,11 @@ bool doMeasurementAndSave() {
   if (shouldBlockControl()) {
     Serial.println("[Emergency] 🛑 急停状态生效中，暂停自动控制");
 
+    // 强制更新状态变量，确保上报的设备状态正确
+    heaterIsOn = false;
+    pumpIsOn = false;
+    aerationIsOn = false;
+
     // 即使急停，仍需采集温度并上报，但不执行控制
     float t_in = readTempIn();
     std::vector<float> t_outs = readTempOut();
@@ -1109,8 +1114,8 @@ void setup() {
   }
   String currentMode = appConfig.bathSetEnabled ? "setpoint" : "ncurve";
 
-  // 获取 IP 地址
-  String ipAddress = WiFi.localIP().toString();
+  // 获取公网IP地址
+  String ipAddress = getPublicIP();
 
   // 构建完整的配置对象
   JsonDocument bootDoc;

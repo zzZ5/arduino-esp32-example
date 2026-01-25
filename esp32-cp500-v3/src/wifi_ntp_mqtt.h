@@ -12,6 +12,7 @@ PubSubClient& getMQTTClient();  // 获取 MQTT 客户端引用（可用于设置
 bool connectToWiFi(unsigned long timeoutMs);
 bool multiNTPSetup(unsigned long timeoutMs);
 String getTimeString();
+String getPublicIP();  // 获取公网IP地址
 
 // ========== MQTT 核心操作 ==========
 bool connectToMQTT(unsigned long timeoutMs);
