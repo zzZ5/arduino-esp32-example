@@ -195,6 +195,32 @@ static bool applyTankSafetyCheck(bool tankValid, bool tankOver, bool& targetHeat
   return heatBlocked;
 }
 
+// 公共函数：Tank-外浴温差安全检查
+// 若温差过大（疑似循环异常），强制停热并尝试开启水泵
+static bool applyTankBathDeltaSafety(bool tankValid, float delta_tank_out,
+  float delta_limit, bool& targetHeat, bool& targetPump, String& reason) {
+  if (!tankValid) return false;
+  if (delta_tank_out < delta_limit) return false;
+
+  if (targetHeat) {
+    reason += " | Tank-外浴温差过大，停热并强制循环";
+  } else {
+    reason += " | Tank-外浴温差过大，强制循环";
+  }
+  targetHeat = false;
+  targetPump = true;
+  heaterManualUntilMs = 0;
+
+  if (heaterIsOn) {
+    heaterOff();
+    heaterIsOn = false;
+    heaterToggleMs = millis();
+    Serial.printf("[SAFETY] Tank-外浴温差过大(%.1f≥%.1f)，强制关闭加热\n",
+      delta_tank_out, delta_limit);
+  }
+  return true;
+}
+
 // 根据 t_in 在 [in_min, in_max] 的相对位置计算自适应 Δ_on / Δ_off（Δ_off 随 Δ_on 比例回差）
 static void computePumpDeltas(float t_in, float in_min, float in_max,
   float& delta_on, float& delta_off) {
@@ -713,12 +739,36 @@ bool doMeasurementAndSave() {
 
   if (t_outs.empty()) {
     Serial.println("[Measure] 外部温度读数为空，跳过本轮控制");
+    // 安全兜底：外浴传感器失效时强制停热/停泵
+    if (heaterIsOn) {
+      heaterOff();
+      heaterIsOn = false;
+      heaterToggleMs = millis();
+    }
+    if (pumpIsOn) {
+      pumpOff();
+      pumpIsOn = false;
+    }
+    heaterManualUntilMs = 0;
+    pumpManualUntilMs = 0;
     return false;
   }
 
   float med_out = median(t_outs, -20.0f, 100.0f, 5.0f);
   if (isnan(med_out)) {
     Serial.println("[Measure] 外部温度有效值为空，跳过本轮控制");
+    // 安全兜底：外浴温度无效时强制停热/停泵
+    if (heaterIsOn) {
+      heaterOff();
+      heaterIsOn = false;
+      heaterToggleMs = millis();
+    }
+    if (pumpIsOn) {
+      pumpOff();
+      pumpIsOn = false;
+    }
+    heaterManualUntilMs = 0;
+    pumpManualUntilMs = 0;
     return false;
   }
 
@@ -886,6 +936,10 @@ bool doMeasurementAndSave() {
 
     // Tank 安全：温度无效或过高时停止加热
     applyTankSafetyCheck(tankValid, tankOver, targetHeat, reason);
+    // 温差安全：疑似循环异常时停热并强制循环（动态阈值随当前曲线变化）
+    const float deltaSafetyLimit = fmaxf(5.0f, DELTA_ON * 1.6f + appConfig.pumpHystNom);
+    applyTankBathDeltaSafety(tankValid, delta_tank_out, deltaSafetyLimit,
+      targetHeat, targetPump, reason);
 
     // 统一执行加热 + 泵控制
     applyHeaterPumpTargets(targetHeat, targetPump, hardCool, msgSafety, reason);
@@ -992,6 +1046,11 @@ bool doMeasurementAndSave() {
     }
 
   } // end !hardCool
+
+  // 温差安全：疑似循环异常时停热并强制循环（动态阈值随当前曲线变化）
+  const float deltaSafetyLimit = fmaxf(5.0f, DELTA_ON * 1.6f + appConfig.pumpHystNom);
+  applyTankBathDeltaSafety(tankValid, delta_tank_out, deltaSafetyLimit,
+    targetHeat, targetPump, reason);
 
   // 统一执行加热 + 泵控制（含 hardCool）
   applyHeaterPumpTargets(targetHeat, targetPump, hardCool, msgSafety, reason);
