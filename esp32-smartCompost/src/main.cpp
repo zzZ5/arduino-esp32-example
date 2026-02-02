@@ -30,6 +30,7 @@
 #include "config_manager.h"
 #include "wifi_ntp_mqtt.h"
 #include "sensor.h"
+#include "data_buffer.h"
 
 // ======================= 持久化 =======================
 Preferences preferences;
@@ -453,15 +454,24 @@ static bool doMeasurementAndSave() {
 
   payload += "]}";
 
-  if (publishData(appConfig.mqttPostTopic(), payload, 10000)) {
+  // 使用带缓存功能的发布
+  if (publishDataOrCache(appConfig.mqttPostTopic(), payload, ts, 10000)) {
+    // 上传成功，更新NVS中的上次测量时间
     preferences.begin(NVS_NAMESPACE, false);
     preferences.putULong(NVS_KEY_LAST_MEAS, (unsigned long)nowEpoch);
     preferences.end();
+
+    // 上传成功后，尝试上传缓存的数据（最多10条）
+    int uploaded = uploadCachedData(10);
+    if (uploaded > 0) {
+      Serial.printf("[Measure] Uploaded %d cached data items\n", uploaded);
+    }
+
     Serial.println("[Measure] 上传成功");
     return true;
   }
 
-  Serial.println("[Measure] 上传失败");
+  Serial.println("[Measure] 上传失败，数据已缓存");
   return false;
 }
 
@@ -525,13 +535,20 @@ void setup() {
     ESP.restart();
   }
 
-  // 2) WiFi + NTP
+  // 2) 初始化数据缓存模块
+  if (!initDataBuffer(100, 7)) {
+    Serial.println("[System] 数据缓存模块初始化失败，继续运行...");
+  } else {
+    Serial.println("[System] 数据缓存模块初始化成功");
+  }
+
+  // 3) WiFi + NTP
   if (!connectToWiFi(20000) || !multiNTPSetup(20000)) {
     Serial.println("[System] WiFi/NTP 失败，重启");
     ESP.restart();
   }
 
-  // 3) MQTT
+  // 4) MQTT
   if (!connectToMQTT(20000)) {
     Serial.println("[System] MQTT 连接失败，重启");
     ESP.restart();
@@ -549,7 +566,7 @@ void setup() {
     Serial.println("[MQTT] response_topic 为空，无法订阅");
   }
 
-  // 4) 传感器初始化（引脚按你当前项目固定：exhaust=25, aeration=26 等）
+  // 5) 传感器初始化（引脚按你当前项目固定：exhaust=25, aeration=26 等）
   // SHT30 使用 I2C, 无需额外引脚
   if (!initSensorAndPump(25, 26, Serial1, 16, 17, 5000)) {
     Serial.println("[ERR] 传感器初始化失败，重启");
@@ -560,12 +577,18 @@ void setup() {
   readMHZ16();
   delay(500);
 
-  // 5) 发布上线消息（先告知服务器设备已上线）
+  // 6) 发布上线消息（先告知服务器设备已上线）
   Serial.println("[System] 发布上线消息...");
   publishOnlineWithConfig();
   delay(500);  // 等待上线消息完全发送
 
-  // 6) 恢复上次测量时间（确保重启后按照间隔时间测量）
+  // 7) 上传之前缓存的旧数据（如果有）
+  int pendingCount = uploadCachedData(10);
+  if (pendingCount > 0) {
+    Serial.printf("[System] 上传了 %d 条缓存的历史数据\n", pendingCount);
+  }
+
+  // 8) 恢复上次测量时间（确保重启后按照间隔时间测量）
   if (preferences.begin(NVS_NAMESPACE, false)) {
     unsigned long lastSec = preferences.getULong(NVS_KEY_LAST_MEAS, 0);
     time_t nowSec = time(nullptr);
@@ -599,7 +622,7 @@ void setup() {
     prevMeasureMs = millis();
   }
 
-  // 7) 启动任务
+  // 9) 启动任务
   xTaskCreatePinnedToCore(measurementTask, "Measure", 16384, NULL, 1, NULL, 1);
   xTaskCreatePinnedToCore(commandTask, "Command", 8192, NULL, 1, NULL, 1);
 
@@ -611,5 +634,15 @@ void setup() {
 // =====================================================
 void loop() {
   maintainMQTT(30000);  // 增加超时时间，给网络更多恢复时间
+  static unsigned long lastCacheUploadMs = 0;
+  const unsigned long CACHE_UPLOAD_INTERVAL = 30000;
+  unsigned long now = millis();
+  if (now - lastCacheUploadMs >= CACHE_UPLOAD_INTERVAL) {
+    lastCacheUploadMs = now;
+    int uploaded = uploadCachedData(10);
+    if (uploaded > 0) {
+      Serial.printf("[Loop] Uploaded %d cached data items\n", uploaded);
+    }
+  }
   delay(100);
 }

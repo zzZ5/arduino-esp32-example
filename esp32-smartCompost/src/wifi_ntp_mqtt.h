@@ -20,5 +20,7 @@ String getPublicIP();  // 通过外部服务获取公网 IP
 bool connectToMQTT(unsigned long timeoutMs);
 void maintainMQTT(unsigned long timeoutMs);
 bool publishData(const String& topic, const String& payload, unsigned long timeoutMs);
+bool publishDataOrCache(const String& topic, const String& payload, const String& timestamp, unsigned long timeoutMs);
+int uploadCachedData(int maxUpload = 10);
 
 #endif

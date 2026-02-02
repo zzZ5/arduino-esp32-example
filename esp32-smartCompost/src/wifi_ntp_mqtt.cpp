@@ -364,3 +364,99 @@ bool publishData(const String& topic, const String& payload, unsigned long timeo
 	Serial.printf("[MQTT] publishData: overall timeout >%lu ms\n", timeoutMs);
 	return false;
 }
+
+/**
+ * @brief 发布数据，失败时缓存到本地
+ * @param topic MQTT主题
+ * @param payload 数据payload
+ * @param timestamp 时间戳（用于缓存）
+ * @param timeoutMs 超时时间
+ * @return true 成功上传 false 失败并缓存
+ */
+bool publishDataOrCache(const String& topic, const String& payload, const String& timestamp, unsigned long timeoutMs) {
+	if (publishData(topic, payload, timeoutMs)) {
+		// 上传成功，无需缓存
+		return true;
+	}
+
+	// 上传失败，尝试缓存到本地
+	Serial.println("[MQTT] Publish failed, caching locally...");
+	extern bool savePendingData(const String&, const String&, const String&);
+
+	if (savePendingData(topic, payload, timestamp)) {
+		Serial.println("[MQTT] Data cached successfully");
+		return false;
+	} else {
+		Serial.println("[MQTT] Failed to cache data");
+		return false;
+	}
+}
+
+/**
+ * @brief 尝试上传缓存数据（每次成功上传新数据后调用）
+ * @param maxUpload 最大上传条数（默认10）
+ * @return 实际上传成功的条数
+ */
+int uploadCachedData(int maxUpload) {
+	extern int getPendingDataCount();
+	extern bool getFirstPendingData(String&, String&, String&);
+	extern bool markFirstDataAsUploaded();
+    extern bool deferFirstPendingDataAfterFailure();
+	extern int cleanUploadedData(int keepCount);
+
+	int pendingCount = getPendingDataCount();
+	if (pendingCount <= 0) {
+		return 0;
+	}
+
+	Serial.printf("[Cache] Found %d pending data items, uploading up to %d...\n", pendingCount, maxUpload);
+
+    const int maxFailuresPerRun = 2;
+    int uploadedCount = 0;
+    int failureCount = 0;
+    for (int i = 0; i < maxUpload; i++) {
+		String topic, payload, timestamp;
+
+		if (!getFirstPendingData(topic, payload, timestamp)) {
+			Serial.println("[Cache] No more pending data");
+			break;
+		}
+
+		Serial.printf("[Cache] Uploading cached data (timestamp: %s)...\n", timestamp.c_str());
+
+		// 尝试上传（使用较短超时，避免阻塞太久）
+        if (publishData(topic, payload, 5000)) {
+			Serial.println("[Cache] Cached data uploaded successfully");
+			// 标记为已上传
+			markFirstDataAsUploaded();
+			uploadedCount++;
+            failureCount = 0;
+			// 每次上传后稍作延迟
+			delay(200);
+		} else {
+			Serial.println("[Cache] Upload failed, keeping cached data for next retry");
+            // 上传失败，延后该条数据，避免卡住队列
+            deferFirstPendingDataAfterFailure();
+            failureCount++;
+            if (failureCount >= maxFailuresPerRun) {
+                Serial.println("[Cache] Too many failures in this run, stop uploading");
+                break;
+            }
+            delay(200);
+		}
+	}
+
+	if (uploadedCount > 0) {
+		Serial.printf("[Cache] Uploaded %d cached data items\n", uploadedCount);
+
+		// 清理旧的已上传数据（只保留最近1条）
+		int cleaned = cleanUploadedData(1);
+		if (cleaned > 0) {
+			Serial.printf("[Cache] Cleaned %d old uploaded items (kept latest 1)\n", cleaned);
+		}
+	} else {
+		Serial.println("[Cache] No cached data uploaded");
+	}
+
+	return uploadedCount;
+}
