@@ -8,6 +8,8 @@
 #include <vector>
 #include <limits.h>
 #include "wifi_ntp_mqtt.h"
+#include <freertos/FreeRTOS.h>
+#include <freertos/semphr.h>
 
 // ========== 全局变量 ==========
 
@@ -16,6 +18,21 @@ static int g_maxCacheDays = 7;
 static const char* CACHE_FILE = "/data_cache.json";
 static const char* CACHE_TEMP_FILE = "/data_cache.tmp";
 static const char* CACHE_BACKUP_FILE = "/data_cache.bak";
+static SemaphoreHandle_t g_cacheMutex = nullptr;
+
+class CacheLock {
+public:
+    CacheLock() {
+        if (g_cacheMutex) {
+            xSemaphoreTake(g_cacheMutex, portMAX_DELAY);
+        }
+    }
+    ~CacheLock() {
+        if (g_cacheMutex) {
+            xSemaphoreGive(g_cacheMutex);
+        }
+    }
+};
 
 // ========== 内部结构 ==========
 
@@ -216,6 +233,12 @@ static bool saveCacheToFile(const std::vector<CacheItem>& items) {
 // ========== 初始化与配置 ==========
 
 bool initDataBuffer(int maxCacheCount, int maxCacheDays) {
+    if (!g_cacheMutex) {
+        g_cacheMutex = xSemaphoreCreateMutex();
+        if (!g_cacheMutex) {
+            Serial.println("[Cache] Failed to create cache mutex");
+        }
+    }
     g_maxCacheCount = maxCacheCount;
     g_maxCacheDays = maxCacheDays;
 
@@ -228,6 +251,7 @@ bool initDataBuffer(int maxCacheCount, int maxCacheDays) {
 }
 
 void cleanExpiredCache() {
+    CacheLock lock;
     Serial.println("[Cache] Checking expired data...");
 
     std::vector<CacheItem> items;
@@ -271,6 +295,7 @@ void cleanExpiredCache() {
 // ========== 数据存储 ==========
 
 bool savePendingData(const String& topic, const String& payload, const String& timestamp) {
+    CacheLock lock;
     std::vector<CacheItem> items;
     if (!loadCacheFromFile(items)) {
         return false;
@@ -312,6 +337,7 @@ bool savePendingData(const String& topic, const String& payload, const String& t
 // ========== 数据读取与标记 ==========
 
 int getPendingDataCount() {
+    CacheLock lock;
     std::vector<CacheItem> items;
     if (!loadCacheFromFile(items)) {
         return -1;
@@ -328,6 +354,7 @@ int getPendingDataCount() {
 }
 
 bool getFirstPendingData(String& outTopic, String& outPayload, String& outTimestamp) {
+    CacheLock lock;
     std::vector<CacheItem> items;
     if (!loadCacheFromFile(items)) {
         return false;
@@ -353,6 +380,7 @@ bool getFirstPendingData(String& outTopic, String& outPayload, String& outTimest
 }
 
 bool markFirstDataAsUploaded() {
+    CacheLock lock;
     std::vector<CacheItem> items;
     if (!loadCacheFromFile(items)) {
         return false;
@@ -378,6 +406,7 @@ bool markFirstDataAsUploaded() {
 }
 
 bool deferFirstPendingDataAfterFailure() {
+    CacheLock lock;
     std::vector<CacheItem> items;
     if (!loadCacheFromFile(items)) {
         return false;
@@ -406,6 +435,7 @@ bool deferFirstPendingDataAfterFailure() {
 }
 
 int cleanUploadedData(int keepCount) {
+    CacheLock lock;
     std::vector<CacheItem> items;
     if (!loadCacheFromFile(items)) {
         return 0;
@@ -451,6 +481,7 @@ int cleanUploadedData(int keepCount) {
 }
 
 bool clearAllPendingData() {
+    CacheLock lock;
     if (SPIFFS.remove(CACHE_FILE)) {
         Serial.println("[Cache] Cleared all cache");
         return true;

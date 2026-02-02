@@ -17,6 +17,9 @@ static DFRobot_EOxygenSensor_I2C o2sensor(&Wire, 0x70);
 // DS18B20
 static OneWire* oneWire = nullptr;
 static DallasTemperature* dallas = nullptr;
+static OneWire oneWireStatic(4);
+static DallasTemperature dallasStatic(&oneWireStatic);
+static bool ds18b20Initialized = false;
 
 // SHT31（I2C 温湿度传感器）
 Adafruit_SHT31 sht31 = Adafruit_SHT31();  // I2C 地址: 0x44
@@ -62,10 +65,12 @@ bool initSensorAndPump(int exhaustPin, int aerationPin,
 
 	// ---- DS18B20 ----
 	// 使用引脚 4 作为 DS18B20 的数据线
-	const int ds18b20Pin = 4;
-	oneWire = new OneWire(ds18b20Pin);
-	dallas = new DallasTemperature(oneWire);
-	dallas->begin();
+	oneWire = &oneWireStatic;
+	dallas = &dallasStatic;
+	if (!ds18b20Initialized) {
+		dallas->begin();
+		ds18b20Initialized = true;
+	}
 
 	// ---- SHT31（I2C 温湿度传感器） ----
 	int sht31Retries = 0;

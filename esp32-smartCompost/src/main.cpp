@@ -26,6 +26,8 @@
 #include <time.h>
 #include <vector>
 #include <ArduinoJson.h>
+#include <freertos/FreeRTOS.h>
+#include <freertos/semphr.h>
 
 #include "config_manager.h"
 #include "wifi_ntp_mqtt.h"
@@ -47,6 +49,9 @@ struct PendingCommand {
 };
 std::vector<PendingCommand> pendingCommands;
 static const int MAX_PENDING_COMMANDS = 50;  // 最大命令队列长度
+static SemaphoreHandle_t g_cmdMutex = nullptr;
+static volatile bool g_pendingRestart = false;
+static unsigned long g_restartAtMs = 0;
 
 // =====================================================
 // 工具：从 JsonVariant 读 String（空则返回 defaultVal）
@@ -334,9 +339,9 @@ static void mqttCallback(char* topic, byte* payload, unsigned int length) {
 
       Serial.println("[CFG] 配置已保存,3 秒后重启生效");
 
-      // 简单延迟重启，避免递归调用 maintainMQTT
-      delay(3000);
-      ESP.restart();
+      // 仅设置重启标记，避免在回调中阻塞
+      g_pendingRestart = true;
+      g_restartAtMs = millis() + 3000;
       return;
     }
 
@@ -349,13 +354,21 @@ static void mqttCallback(char* topic, byte* payload, unsigned int length) {
     String schedule = readStr(obj["schedule"], "");
     time_t target = parseScheduleOrNow(schedule);
 
+    if (g_cmdMutex) {
+      xSemaphoreTake(g_cmdMutex, portMAX_DELAY);
+    }
     // 检查队列是否已满
     if ((int)pendingCommands.size() >= MAX_PENDING_COMMANDS) {
       Serial.println("[CMD] 命令队列已满,忽略新命令");
+      if (g_cmdMutex) {
+        xSemaphoreGive(g_cmdMutex);
+      }
       continue;
     }
-
     pendingCommands.push_back({ cmd, action, dur, target });
+    if (g_cmdMutex) {
+      xSemaphoreGive(g_cmdMutex);
+    }
   }
 }
 
@@ -507,17 +520,23 @@ static void measurementTask(void*) {
 static void commandTask(void*) {
   while (true) {
     time_t now = time(nullptr);
-    int size = (int)pendingCommands.size();
-    for (int i = 0; i < size; i++) {
+    std::vector<PendingCommand> dueCommands;
+    if (g_cmdMutex) {
+      xSemaphoreTake(g_cmdMutex, portMAX_DELAY);
+    }
+    for (int i = 0; i < (int)pendingCommands.size();) {
       if (now >= pendingCommands[i].targetTime) {
-        // 先删除命令,再执行(避免重启时内存泄漏)
-        PendingCommand cmdCopy = pendingCommands[i];
+        dueCommands.push_back(pendingCommands[i]);
         pendingCommands.erase(pendingCommands.begin() + i);
-        executeCommand(cmdCopy);
-        // 删除后索引调整
-        i--;
-        size--;
+        continue;
       }
+      i++;
+    }
+    if (g_cmdMutex) {
+      xSemaphoreGive(g_cmdMutex);
+    }
+    for (auto& cmd : dueCommands) {
+      executeCommand(cmd);
     }
     vTaskDelay(1000 / portTICK_PERIOD_MS);
   }
@@ -529,6 +548,12 @@ static void commandTask(void*) {
 void setup() {
   Serial.begin(115200);
   Serial.println("[System] 启动中...");
+  if (!g_cmdMutex) {
+    g_cmdMutex = xSemaphoreCreateMutex();
+    if (!g_cmdMutex) {
+      Serial.println("[CMD] Failed to create command mutex");
+    }
+  }
 
   // 1) SPIFFS + 读取 config.json
   if (!initSPIFFS() || !loadConfigFromSPIFFS("/config.json")) {
@@ -639,6 +664,9 @@ void setup() {
 // =====================================================
 void loop() {
   maintainMQTT(30000);  // 增加超时时间，给网络更多恢复时间
+  if (g_pendingRestart && (int32_t)(millis() - g_restartAtMs) >= 0) {
+    ESP.restart();
+  }
   static unsigned long lastCacheUploadMs = 0;
   const unsigned long CACHE_UPLOAD_INTERVAL = 30000;
   unsigned long now = millis();
