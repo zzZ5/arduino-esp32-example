@@ -1,7 +1,7 @@
 {
   "wifi": {
-    "ssid": "沃土3",
-    "password": "y2859307.."
+    "ssid": "TP-LINK_vt",
+    "password": "11112222"
   },
   "mqtt": {
     "server": "118.25.108.254",

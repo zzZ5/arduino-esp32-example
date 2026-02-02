@@ -131,7 +131,8 @@ static void publishOnlineWithConfig() {
   bool result = publishData(registerTopic, out, 10000);
   if (result) {
     Serial.println("[Register] 上线消息发布成功！");
-  } else {
+  }
+  else {
     Serial.println("[Register] 上线消息发布失败！");
   }
 }
@@ -404,7 +405,7 @@ static bool doMeasurementAndSave() {
   auto getQuality = [](float val) -> const char* {
     if (val < 0) return "ERR";
     return "OK";
-  };
+    };
 
   // 新格式：{ "schema_version": 2, "ts": "...", "channels": [ { "code": "...", "value": ..., "unit": "...", "quality": "..." }, ... ] }
   String payload = "{";
@@ -536,9 +537,10 @@ void setup() {
   }
 
   // 2) 初始化数据缓存模块
-  if (!initDataBuffer(100, 7)) {
+  if (!initDataBuffer(200, 7)) {
     Serial.println("[System] 数据缓存模块初始化失败，继续运行...");
-  } else {
+  }
+  else {
     Serial.println("[System] 数据缓存模块初始化成功");
   }
 
@@ -605,19 +607,22 @@ void setup() {
         prevMeasureMs = millis() - elapsedMs;
         unsigned long nextDelayMs = appConfig.readInterval - (elapsedMs % appConfig.readInterval);
         Serial.printf("[Time] Next measure in %lu ms\n", nextDelayMs);
-      } else {
+      }
+      else {
         // 还未到间隔，等待剩余时间
         prevMeasureMs = millis() - elapsedMs;
         unsigned long remainingMs = appConfig.readInterval - elapsedMs;
         Serial.printf("[Time] Wait %lu ms until next measure\n", remainingMs);
       }
-    } else {
+    }
+    else {
       // 没有上次记录或时间异常，从现在开始
       prevMeasureMs = millis();
       Serial.println("[Time] No previous measure record, starting fresh");
     }
     preferences.end();
-  } else {
+  }
+  else {
     // NVS 失败，从现在开始
     prevMeasureMs = millis();
   }

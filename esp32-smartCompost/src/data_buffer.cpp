@@ -7,6 +7,7 @@
 #include "config_manager.h"
 #include <vector>
 #include <limits.h>
+#include "wifi_ntp_mqtt.h"
 
 // ========== 全局变量 ==========
 
@@ -127,7 +128,8 @@ static bool loadCacheFromFile(std::vector<CacheItem>& items) {
             }
             if (!SPIFFS.rename(CACHE_FILE, badPath)) {
                 Serial.println("[Cache] Failed to backup corrupt cache file");
-            } else {
+            }
+            else {
                 Serial.println("[Cache] Corrupt cache file moved aside");
             }
         }
@@ -260,7 +262,8 @@ void cleanExpiredCache() {
     if (deletedCount > 0) {
         Serial.printf("[Cache] Cleaned %d expired items\n", deletedCount);
         saveCacheToFile(items);
-    } else {
+    }
+    else {
         Serial.println("[Cache] No expired data found");
     }
 }
