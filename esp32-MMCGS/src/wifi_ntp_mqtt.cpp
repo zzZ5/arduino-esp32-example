@@ -1,0 +1,489 @@
+// wifi_ntp_mqtt.cpp
+#include "wifi_ntp_mqtt.h"
+#include "config_manager.h"
+#include <WiFi.h>
+#include <time.h>
+#include <HTTPClient.h>
+
+// 全局 WiFiClient 与 MQTT 客户端
+static WiFiClient espClient;
+PubSubClient mqttClient(espClient);
+
+// WiFi 保活状态
+static unsigned long lastWiFiCheck = 0;
+static const unsigned long WIFI_CHECK_INTERVAL = 30000;  // 30秒检查一次
+
+// WiFi 连接失败计数器
+static int wifiFailCount = 0;
+static const int WIFI_FAIL_LIMIT = 5;  // 连续失败5次后重启
+
+// 网络连通性检测
+static unsigned long lastNetworkCheck = 0;
+static const unsigned long NETWORK_CHECK_INTERVAL = 60000;  // 60秒检查一次
+static int networkFailCount = 0;
+static const int NETWORK_FAIL_LIMIT = 3;  // 连续失败3次后重启
+
+// 外部访问 MQTT 客户端引用
+PubSubClient& getMQTTClient() {
+	return mqttClient;
+}
+
+static String buildEffectiveMqttClientId() {
+	String base = appConfig.mqttClientId;
+	base.trim();
+	if (base.length() == 0) {
+		base = "esp32";
+	}
+
+	String deviceCode = appConfig.deviceCode;
+	deviceCode.trim();
+	if (deviceCode.length() > 0) {
+		base += "-";
+		base += deviceCode;
+		return base;
+	}
+
+	uint64_t mac = ESP.getEfuseMac();
+	char suffix[13];
+	snprintf(suffix, sizeof(suffix), "%04X%08X",
+		(uint16_t)(mac >> 32),
+		(uint32_t)mac);
+	base += "-";
+	base += suffix;
+	return base;
+}
+
+/**
+ * @brief 检测网络连通性（通过 ping 或 HTTP 请求）
+ */
+static bool checkNetworkConnectivity() {
+	// 尝试通过 DNS 解析检测连通性（不消耗流量）
+	IPAddress result;
+	if (WiFi.hostByName("www.baidu.com", result)) {
+		Serial.println("[Network] Connectivity OK (DNS resolved)");
+		return true;
+	}
+
+	// 如果 DNS 失败，尝试 MQTT 服务器连通性
+	if (WiFi.hostByName(appConfig.mqttServer.c_str(), result)) {
+		Serial.println("[Network] MQTT server reachable");
+		return true;
+	}
+
+	return false;
+}
+
+/**
+ * @brief 保持网络连通（检测无网络时重启）
+ */
+static void maintainNetwork() {
+	unsigned long now = millis();
+	if (now - lastNetworkCheck < NETWORK_CHECK_INTERVAL) {
+		return;
+	}
+	lastNetworkCheck = now;
+
+	// 只在 WiFi 已连接时检测网络
+	if (WiFi.status() != WL_CONNECTED) {
+		return;
+	}
+
+	if (!checkNetworkConnectivity()) {
+		networkFailCount++;
+		Serial.printf("[Network] No internet, fail count: %d/%d\n", networkFailCount, NETWORK_FAIL_LIMIT);
+
+		if (networkFailCount >= NETWORK_FAIL_LIMIT) {
+			Serial.println("[Network] No internet for too long, restarting...");
+			delay(1000);
+			ESP.restart();
+		}
+	} else {
+		networkFailCount = 0;  // 网络正常，重置计数器
+	}
+}
+
+/**
+ * @brief 保持 WiFi 在线（自动重连）
+ */
+static void maintainWiFi() {
+	unsigned long now = millis();
+	if (now - lastWiFiCheck < WIFI_CHECK_INTERVAL) {
+		return;
+	}
+	lastWiFiCheck = now;
+
+	if (WiFi.status() != WL_CONNECTED) {
+		Serial.println("[WiFi] Disconnected, reconnecting...");
+		WiFi.disconnect();
+		delay(500);
+		if (!connectToWiFi(10000)) {
+			Serial.println("[WiFi] Reconnect failed");
+			wifiFailCount++;
+			Serial.printf("[WiFi] Fail count: %d/%d\n", wifiFailCount, WIFI_FAIL_LIMIT);
+
+			// 连续失败超过限制，重启设备
+			if (wifiFailCount >= WIFI_FAIL_LIMIT) {
+				Serial.println("[WiFi] Too many failures, restarting device...");
+				delay(1000);
+				ESP.restart();
+			}
+		} else {
+			// 连接成功，重置计数器
+			wifiFailCount = 0;
+		}
+	}
+}
+
+/**
+ * @brief 连接 WiFi
+ */
+bool connectToWiFi(unsigned long timeoutMs) {
+	WiFi.mode(WIFI_STA);
+	WiFi.begin(appConfig.wifiSSID.c_str(), appConfig.wifiPass.c_str());
+
+	Serial.print("[WiFi] Connecting to: ");
+	Serial.println(appConfig.wifiSSID);
+
+	unsigned long start = millis();
+	while (WiFi.status() != WL_CONNECTED) {
+		delay(500);
+		if (millis() - start > timeoutMs) {
+			Serial.println("\n[WiFi] Timeout!");
+			return false;
+		}
+	}
+
+	Serial.printf("[WiFi] Connected, IP: %s\n", WiFi.localIP().toString().c_str());
+	return true;
+}
+
+/**
+ * @brief 等待 NTP 时间同步（每次尝试最多 waitMs 毫秒）
+ */
+static bool waitForSync(unsigned long waitMs) {
+	unsigned long start = millis();
+	struct tm tinfo;
+	while ((millis() - start) < waitMs) {
+		if (getLocalTime(&tinfo)) {
+			return true;
+		}
+		delay(100);
+	}
+	return false;
+}
+
+/**
+ * @brief 多 NTP 服务器同步方案，超时退出
+ */
+bool multiNTPSetup(unsigned long totalTimeoutMs) {
+	unsigned long start = millis();
+	bool synced = false;
+
+	while (!synced) {
+		for (const auto& server : appConfig.ntpServers) {
+			if (millis() - start > totalTimeoutMs) {
+				Serial.println("[NTP] overall timeout!");
+				return false;
+			}
+
+			if (server.length() < 1) continue;
+
+			Serial.print("[NTP] Trying server: ");
+			Serial.println(server);
+
+			configTime(0, 0, server.c_str());
+			if (waitForSync(3000)) {
+				Serial.println("[NTP] Success!");
+				synced = true;
+				break;
+			}
+			else {
+				Serial.println("[NTP] Failed, try next...");
+			}
+		}
+
+		if (!synced) {
+			if (millis() - start > totalTimeoutMs) {
+				Serial.println("[NTP] overall timeout (retry)");
+				return false;
+			}
+			Serial.println("[NTP] All failed, retry after 2s...");
+			delay(2000);
+		}
+	}
+
+	// 设置时区：东八区
+	configTime(8 * 3600, 0, appConfig.ntpServers[0].c_str());
+	Serial.println("[NTP] Timezone set to UTC+8");
+	return true;
+}
+
+/**
+ * @brief 获取当前时间的字符串格式
+ * 如果 NTP 未同步，返回默认时间字符串
+ */
+String getTimeString() {
+	struct tm tinfo;
+	if (!getLocalTime(&tinfo)) {
+		// NTP 未同步，返回默认时间
+		return "1970-01-01 00:00:00";
+	}
+
+	// 检查时间是否有效（1970 年表示未同步）
+	if (tinfo.tm_year < 120) {  // 2020年以前认为未同步
+		return "1970-01-01 00:00:00";
+	}
+
+	char buf[20];
+	strftime(buf, sizeof(buf), "%Y-%m-%d %H:%M:%S", &tinfo);
+	return String(buf);
+}
+
+/**
+ * @brief 连接 MQTT 服务器
+ */
+bool connectToMQTT(unsigned long timeoutMs) {
+	mqttClient.setServer(appConfig.mqttServer.c_str(), appConfig.mqttPort);
+	mqttClient.setBufferSize(1024);
+	const String effectiveClientId = buildEffectiveMqttClientId();
+
+	unsigned long start = millis();
+	while (!mqttClient.connected()) {
+		if (WiFi.status() != WL_CONNECTED) {
+			Serial.println("[MQTT] WiFi not connected, reconnecting...");
+			if (!connectToWiFi(timeoutMs)) return false;
+		}
+
+		if (millis() - start > timeoutMs) {
+			Serial.printf("[MQTT] connect timeout (> %lu ms)\n", timeoutMs);
+			return false;
+		}
+
+		Serial.printf("[MQTT] Connecting to %s:%d...\n", appConfig.mqttServer.c_str(), appConfig.mqttPort);
+		Serial.printf("[MQTT] Client ID: %s\n", effectiveClientId.c_str());
+		if (mqttClient.connect(effectiveClientId.c_str(),
+			appConfig.mqttUser.c_str(),
+			appConfig.mqttPass.c_str())) {
+			Serial.println("[MQTT] Connected.");
+
+			// 连接成功后重新订阅响应 topic
+			String respTopic = appConfig.mqttResponseTopic();
+			if (respTopic.length() > 0) {
+				if (mqttClient.subscribe(respTopic.c_str())) {
+					Serial.println("[MQTT] Resubscribed to response topic.");
+				}
+				else {
+					Serial.println("[MQTT] Failed to subscribe response topic.");
+				}
+			}
+
+			return true;
+		}
+		else {
+			Serial.printf("[MQTT] Fail, state=%d. Retry in 300ms\n", mqttClient.state());
+			delay(300);
+		}
+	}
+
+	return false;
+}
+
+/**
+ * @brief 获取公网 IP 地址
+ * 通过外部服务查询，失败返回局域网 IP
+ */
+String getPublicIP() {
+	// 优先使用局域网 IP（如果设备直接在公网或使用端口转发）
+	String localIP = WiFi.localIP().toString();
+	Serial.printf("[IP] Local IP: %s\n", localIP.c_str());
+
+	// 尝试从多个服务获取公网 IP
+	const char* ipServices[] = {
+		"http://ifconfig.me/ip",
+		"http://icanhazip.com",
+		"http://ipecho.net/plain",
+		"http://api.ipify.org"
+	};
+
+	HTTPClient http;
+	http.setTimeout(5000);  // 5秒超时
+
+	for (const char* url : ipServices) {
+		if (WiFi.status() != WL_CONNECTED) {
+			break;
+		}
+
+		Serial.printf("[IP] Trying: %s\n", url);
+		if (http.begin(url)) {
+			int httpCode = http.GET();
+			if (httpCode == HTTP_CODE_OK) {
+				String publicIP = http.getString();
+				publicIP.trim();
+				http.end();
+
+				if (publicIP.length() > 0) {
+					Serial.printf("[IP] Public IP: %s\n", publicIP.c_str());
+					return publicIP;
+				}
+			}
+			http.end();
+		}
+		delay(500);
+	}
+
+	Serial.println("[IP] Failed to get public IP, using local IP");
+	return localIP;
+}
+
+/**
+ * @brief 保持 MQTT 在线（WiFi保活 + 网络检测 + 重连 + loop）
+ */
+void maintainMQTT(unsigned long timeoutMs) {
+	// 先保持 WiFi 在线
+	maintainWiFi();
+
+	// 检测网络连通性
+	maintainNetwork();
+
+	if (!mqttClient.connected()) {
+		Serial.printf("[MQTT] Not connected, state=%d, reconnecting...\n", mqttClient.state());
+		connectToMQTT(timeoutMs);
+	}
+	mqttClient.loop();
+}
+
+/**
+ * @brief 通过 MQTT 发布数据
+ */
+bool publishData(const String& topic, const String& payload, unsigned long timeoutMs) {
+	unsigned long start = millis();
+
+	// 先确保 WiFi 在线
+	maintainWiFi();
+
+	while (!mqttClient.connected()) {
+		if (millis() - start > timeoutMs) {
+			Serial.printf("[MQTT] publishData: connect timeout >%lu ms\n", timeoutMs);
+			return false;
+		}
+		maintainWiFi();
+		connectToMQTT(timeoutMs - (millis() - start));
+	}
+
+	while (millis() - start < timeoutMs) {
+		if (mqttClient.publish(topic.c_str(), payload.c_str())) {
+			Serial.println("[MQTT] Publish success:");
+			Serial.println(payload);
+			return true;
+		}
+		else {
+			Serial.printf("[MQTT] Publish fail, state=%d. Retry in 300ms\n", mqttClient.state());
+			delay(300);
+
+			// 检查 WiFi 和 MQTT 连接
+			maintainWiFi();
+			if (!mqttClient.connected()) {
+				connectToMQTT(timeoutMs - (millis() - start));
+			}
+		}
+	}
+
+	Serial.printf("[MQTT] publishData: overall timeout >%lu ms\n", timeoutMs);
+	return false;
+}
+
+/**
+ * @brief 发布数据，失败时缓存到本地
+ * @param topic MQTT主题
+ * @param payload 数据payload
+ * @param timestamp 时间戳（用于缓存）
+ * @param timeoutMs 超时时间
+ * @return true 成功上传 false 失败并缓存
+ */
+bool publishDataOrCache(const String& topic, const String& payload, const String& timestamp, unsigned long timeoutMs) {
+	if (publishData(topic, payload, timeoutMs)) {
+		// 上传成功，无需缓存
+		return true;
+	}
+
+	// 上传失败，尝试缓存到本地
+	Serial.println("[MQTT] Publish failed, caching locally...");
+	extern bool savePendingData(const String&, const String&, const String&);
+
+	if (savePendingData(topic, payload, timestamp)) {
+		Serial.println("[MQTT] Data cached successfully");
+		return false;
+	} else {
+		Serial.println("[MQTT] Failed to cache data");
+		return false;
+	}
+}
+
+/**
+ * @brief 尝试上传缓存数据（每次成功上传新数据后调用）
+ * @param maxUpload 最大上传条数（默认10）
+ * @return 实际上传成功的条数
+ */
+int uploadCachedData(int maxUpload) {
+	extern int getPendingDataCount();
+	extern bool getFirstPendingData(String&, String&, String&);
+	extern bool markFirstDataAsUploaded();
+    extern bool deferFirstPendingDataAfterFailure();
+	extern int cleanUploadedData(int keepCount);
+
+	int pendingCount = getPendingDataCount();
+	if (pendingCount <= 0) {
+		return 0;
+	}
+
+	Serial.printf("[Cache] Found %d pending data items, uploading up to %d...\n", pendingCount, maxUpload);
+
+    const int maxFailuresPerRun = 2;
+    int uploadedCount = 0;
+    int failureCount = 0;
+    for (int i = 0; i < maxUpload; i++) {
+		String topic, payload, timestamp;
+
+		if (!getFirstPendingData(topic, payload, timestamp)) {
+			Serial.println("[Cache] No more pending data");
+			break;
+		}
+
+		Serial.printf("[Cache] Uploading cached data (timestamp: %s)...\n", timestamp.c_str());
+
+		// 尝试上传（使用较短超时，避免阻塞太久）
+        if (publishData(topic, payload, 5000)) {
+			Serial.println("[Cache] Cached data uploaded successfully");
+			// 标记为已上传
+			markFirstDataAsUploaded();
+			uploadedCount++;
+            failureCount = 0;
+			// 每次上传后稍作延迟
+			delay(200);
+		} else {
+			Serial.println("[Cache] Upload failed, keeping cached data for next retry");
+            // 上传失败，延后该条数据，避免卡住队列
+            deferFirstPendingDataAfterFailure();
+            failureCount++;
+            if (failureCount >= maxFailuresPerRun) {
+                Serial.println("[Cache] Too many failures in this run, stop uploading");
+                break;
+            }
+            delay(200);
+		}
+	}
+
+	if (uploadedCount > 0) {
+		Serial.printf("[Cache] Uploaded %d cached data items\n", uploadedCount);
+
+		// 清理旧的已上传数据（只保留最近1条）
+		int cleaned = cleanUploadedData(1);
+		if (cleaned > 0) {
+			Serial.printf("[Cache] Cleaned %d old uploaded items (kept latest 1)\n", cleaned);
+		}
+	} else {
+		Serial.println("[Cache] No cached data uploaded");
+	}
+
+	return uploadedCount;
+}
