@@ -7,17 +7,17 @@ AppConfig appConfig;
 
 bool initSPIFFS() {
 	if (!SPIFFS.begin(true)) {
-		Serial.println("[Config] SPIFFS mount fail!");
+		Serial.println("[Config] Failed to mount SPIFFS");
 		return false;
 	}
-	Serial.println("[Config] SPIFFS mount OK");
+	Serial.println("[Config] SPIFFS mounted successfully");
 	return true;
 }
 
 bool loadConfigFromSPIFFS(const char* path) {
 	File file = SPIFFS.open(path, "r");
 	if (!file) {
-		Serial.println("[Config] no config file");
+		Serial.println("[Config] Configuration file not found");
 		return false;
 	}
 
@@ -26,8 +26,8 @@ bool loadConfigFromSPIFFS(const char* path) {
 	Serial.printf("[Config] File size: %d bytes\n", fileSize);
 
 	if (fileSize == 0) {
-		Serial.println("[Config] Config file is empty!");
-		Serial.println("[Config] Using default configuration...");
+		Serial.println("[Config] Configuration file is empty");
+		Serial.println("[Config] Using default configuration values");
 		file.close();
 
 		// 使用默认配置
@@ -55,7 +55,7 @@ bool loadConfigFromSPIFFS(const char* path) {
 	StaticJsonDocument<4096> doc;
 	DeserializationError err = deserializeJson(doc, content);
 	if (err) {
-		Serial.print("[Config] parse error: ");
+		Serial.print("[Config] JSON parse error: ");
 		Serial.println(err.c_str());
 		return false;
 	}
@@ -123,11 +123,11 @@ bool saveConfigToSPIFFS(const char* path) {
 	// 写回文件
 	File file = SPIFFS.open(path, FILE_WRITE);
 	if (!file) {
-		Serial.printf("[Config] open %s fail for write!\n", path);
+		Serial.printf("[Config] Failed to open %s for writing\n", path);
 		return false;
 	}
 	if (serializeJson(doc, file) == 0) {
-		Serial.println("[Config] serializeJson fail");
+		Serial.println("[Config] Failed to serialize configuration JSON");
 		file.close();
 		return false;
 	}

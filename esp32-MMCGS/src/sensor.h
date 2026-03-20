@@ -3,7 +3,6 @@
 
 #include <Arduino.h>
 
-// ZCE04B 当前输出的四种气体读数。
 struct ZCE04BGasData {
   float co;
   float h2s;
@@ -11,37 +10,31 @@ struct ZCE04BGasData {
   float ch4;
 };
 
-// DHT21 温湿度读数。
-struct DHT21Data {
+struct SHT30Data {
   float temperature;
   float humidity;
 };
 
-// 初始化泵和传感器。
 bool initSensorAndPump(
-  int exhaustPin,
-  int aerationPin,
+  int pumpPin,
   HardwareSerial& mhzSerial,
   int mhzRxPin,
   int mhzTxPin,
   HardwareSerial& zceSerial,
   int zceRxPin,
   int zceTxPin,
-  uint8_t dhtPin,
+  uint8_t shtSdaPin,
+  uint8_t shtSclPin,
   unsigned long timeoutMs);
 
-// 泵控制。
 void exhaustPumpOn();
 void exhaustPumpOff();
-void aerationOn();
-void aerationOff();
 
-// 传感器读取接口。
 int readMHZ16();
 bool readZCE04B(ZCE04BGasData& data);
 float readEOxygen();
-bool readDHT21(DHT21Data& data);
-float readDHT21Temp();
-float readDHT21Hum();
+bool readSHT30(SHT30Data& data);
+float readSHT30Temp();
+float readSHT30Hum();
 
 #endif

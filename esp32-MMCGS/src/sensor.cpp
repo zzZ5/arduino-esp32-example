@@ -1,10 +1,10 @@
 #include "sensor.h"
 
-#include <DHT.h>
+#include <Wire.h>
+#include <Adafruit_SHT31.h>
 
 namespace {
 
-  // Keep private sensor drivers in this file so the public API stays small.
   class MHZ16Sensor {
   public:
     struct Data {
@@ -221,19 +221,24 @@ namespace {
     }
   };
 
-  class DHT21SensorImpl {
+  class SHT30SensorImpl {
   public:
     struct Data {
       float temperature;
       float humidity;
     };
 
-    explicit DHT21SensorImpl(uint8_t pin) : dht_(pin, DHT21) {}
+    SHT30SensorImpl() : sht31_(&wire_) {
+    }
 
-    bool begin() {
-      dht_.begin();
-      delay(1000);   // DHT21 上电后建议等待 1 s
+    bool begin(uint8_t sdaPin, uint8_t sclPin) {
+      wire_.begin(sdaPin, sclPin);
+      delay(50);
+      if (!sht31_.begin(0x44)) {
+        return false;
+      }
       failCount_ = 0;
+      hasCache_ = false;
       return true;
     }
 
@@ -243,28 +248,23 @@ namespace {
         return true;
       }
 
-      float humidity = dht_.readHumidity(false);
-      float temperature = dht_.readTemperature(false, false);
+      float temperature = sht31_.readTemperature();
+      float humidity = sht31_.readHumidity();
 
-      // 第一次失败后，强制重读一次
-      if (isnan(humidity) || isnan(temperature)) {
+      if (isnan(temperature) || isnan(humidity)) {
         delay(50);
-        humidity = dht_.readHumidity(true);
-        temperature = dht_.readTemperature(false, true);
+        temperature = sht31_.readTemperature();
+        humidity = sht31_.readHumidity();
       }
 
-      if (isnan(humidity) || isnan(temperature)) {
+      if (isnan(temperature) || isnan(humidity)) {
         failCount_++;
-
-        // 可选：短时失败时直接返回上次有效值
         if (hasCache_) {
           data = lastData_;
         }
-
-        // 连续失败过多，重新初始化
         if (failCount_ >= 3) {
-          dht_.begin();
-          delay(1000);
+          sht31_.reset();
+          delay(20);
           failCount_ = 0;
         }
         return false;
@@ -281,7 +281,8 @@ namespace {
   private:
     static constexpr uint32_t kMinReadIntervalMs = 2000;
 
-    DHT dht_;
+    TwoWire wire_ = TwoWire(0);
+    Adafruit_SHT31 sht31_;
     unsigned long lastReadMs_ = 0;
     bool hasCache_ = false;
     uint8_t failCount_ = 0;
@@ -294,52 +295,46 @@ namespace {
 
   MHZ16Sensor* g_mhz16 = nullptr;
   ZCE04BSensor* g_zce04b = nullptr;
-  DHT21SensorImpl* g_dht21 = nullptr;
+  SHT30SensorImpl* g_sht30 = nullptr;
 
-  int g_exhaustPin = -1;
-  int g_aerationPin = -1;
+  int g_pumpPin = -1;
 
   void destroySensors() {
     delete g_mhz16;
     delete g_zce04b;
-    delete g_dht21;
+    delete g_sht30;
 
     g_mhz16 = nullptr;
     g_zce04b = nullptr;
-    g_dht21 = nullptr;
+    g_sht30 = nullptr;
   }
 
 }  // namespace
 
 bool initSensorAndPump(
-  int exhaustPin,
-  int aerationPin,
+  int pumpPin,
   HardwareSerial& mhzSerial,
   int mhzRxPin,
   int mhzTxPin,
   HardwareSerial& zceSerial,
   int zceRxPin,
   int zceTxPin,
-  uint8_t dhtPin,
+  uint8_t shtSdaPin,
+  uint8_t shtSclPin,
   unsigned long timeoutMs) {
   unsigned long startMs = millis();
 
   destroySensors();
 
-  g_exhaustPin = exhaustPin;
-  g_aerationPin = aerationPin;
-
-  pinMode(g_exhaustPin, OUTPUT);
-  digitalWrite(g_exhaustPin, HIGH);
-
-  pinMode(g_aerationPin, OUTPUT);
-  digitalWrite(g_aerationPin, LOW);
+  g_pumpPin = pumpPin;
+  pinMode(g_pumpPin, OUTPUT);
+  digitalWrite(g_pumpPin, LOW);
 
   g_mhz16 = new MHZ16Sensor(mhzSerial, mhzRxPin, mhzTxPin);
   g_zce04b = new ZCE04BSensor(zceSerial, zceRxPin, zceTxPin);
-  g_dht21 = new DHT21SensorImpl(dhtPin);
+  g_sht30 = new SHT30SensorImpl();
 
-  if (!g_mhz16 || !g_zce04b || !g_dht21) {
+  if (!g_mhz16 || !g_zce04b || !g_sht30) {
     Serial.println("[Sensor] Failed to allocate sensor drivers");
     destroySensors();
     return false;
@@ -357,8 +352,8 @@ bool initSensorAndPump(
     return false;
   }
 
-  if (!g_dht21->begin()) {
-    Serial.println("[Sensor] DHT21 init failed");
+  if (!g_sht30->begin(shtSdaPin, shtSclPin)) {
+    Serial.println("[Sensor] SHT30 init failed");
     destroySensors();
     return false;
   }
@@ -371,31 +366,19 @@ bool initSensorAndPump(
 
   Serial.println("[Sensor] MH-Z16 initialized");
   Serial.println("[Sensor] ZCE04B initialized");
-  Serial.println("[Sensor] DHT21 initialized");
+  Serial.printf("[Sensor] SHT30 initialized on I2C SDA=%u SCL=%u\n", shtSdaPin, shtSclPin);
   return true;
 }
 
 void exhaustPumpOn() {
-  if (g_exhaustPin >= 0) {
-    digitalWrite(g_exhaustPin, LOW);
+  if (g_pumpPin >= 0) {
+    digitalWrite(g_pumpPin, HIGH);
   }
 }
 
 void exhaustPumpOff() {
-  if (g_exhaustPin >= 0) {
-    digitalWrite(g_exhaustPin, HIGH);
-  }
-}
-
-void aerationOn() {
-  if (g_aerationPin >= 0) {
-    digitalWrite(g_aerationPin, HIGH);
-  }
-}
-
-void aerationOff() {
-  if (g_aerationPin >= 0) {
-    digitalWrite(g_aerationPin, LOW);
+  if (g_pumpPin >= 0) {
+    digitalWrite(g_pumpPin, LOW);
   }
 }
 
@@ -442,13 +425,13 @@ float readEOxygen() {
   return data.o2;
 }
 
-bool readDHT21(DHT21Data& data) {
-  if (!g_dht21) {
+bool readSHT30(SHT30Data& data) {
+  if (!g_sht30) {
     return false;
   }
 
-  DHT21SensorImpl::Data raw{};
-  if (!g_dht21->readData(raw)) {
+  SHT30SensorImpl::Data raw{};
+  if (!g_sht30->readData(raw)) {
     return false;
   }
 
@@ -457,18 +440,18 @@ bool readDHT21(DHT21Data& data) {
   return true;
 }
 
-float readDHT21Temp() {
-  DHT21Data data{};
-  if (!readDHT21(data)) {
+float readSHT30Temp() {
+  SHT30Data data{};
+  if (!readSHT30(data)) {
     return -127.0f;
   }
 
   return data.temperature;
 }
 
-float readDHT21Hum() {
-  DHT21Data data{};
-  if (!readDHT21(data)) {
+float readSHT30Hum() {
+  SHT30Data data{};
+  if (!readSHT30(data)) {
     return -1.0f;
   }
 
