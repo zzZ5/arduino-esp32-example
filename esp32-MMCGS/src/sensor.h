@@ -16,7 +16,8 @@ struct SHT30Data {
 };
 
 bool initSensorAndPump(
-  int pumpPin,
+  const uint8_t* pumpPins,
+  size_t pumpCount,
   HardwareSerial& mhzSerial,
   int mhzRxPin,
   int mhzTxPin,
@@ -27,8 +28,9 @@ bool initSensorAndPump(
   uint8_t shtSclPin,
   unsigned long timeoutMs);
 
-void exhaustPumpOn();
-void exhaustPumpOff();
+void pumpOn(size_t index);
+void pumpOff(size_t index);
+void allPumpsOff();
 
 int readMHZ16();
 bool readZCE04B(ZCE04BGasData& data);

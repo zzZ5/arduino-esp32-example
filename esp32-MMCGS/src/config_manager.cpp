@@ -5,6 +5,17 @@
 // 全局配置对象
 AppConfig appConfig;
 
+static void ensurePointDeviceCodes() {
+	if (appConfig.pointDeviceCodes.size() < AppConfig::kPointCount) {
+		appConfig.pointDeviceCodes.resize(AppConfig::kPointCount);
+	}
+	for (size_t i = 0; i < AppConfig::kPointCount; ++i) {
+		if (appConfig.pointDeviceCodes[i].length() == 0) {
+			appConfig.pointDeviceCodes[i] = appConfig.deviceCode + "-P" + String(i + 1);
+		}
+	}
+}
+
 bool initSPIFFS() {
 	if (!SPIFFS.begin(true)) {
 		Serial.println("[Config] Failed to mount SPIFFS");
@@ -39,9 +50,12 @@ bool loadConfigFromSPIFFS(const char* path) {
 		appConfig.mqttPass = "";
 		appConfig.mqttClientId = "esp32";
 		appConfig.deviceCode = "SmartCompost001";
+		appConfig.pointDeviceCodes.clear();
 		appConfig.ntpServers = {"ntp.aliyun.com", "cn.ntp.org.cn"};
-		appConfig.pumpRunTime = 60000;
+		appConfig.sampleTime = 120000;
+		appConfig.purgePumpTime = 15000;
 		appConfig.readInterval = 60000;
+		ensurePointDeviceCodes();
 
 		return true;
 	}
@@ -71,6 +85,12 @@ bool loadConfigFromSPIFFS(const char* path) {
 	appConfig.mqttPass = doc["mqtt"]["pass"] | "";
 	appConfig.mqttClientId = doc["mqtt"]["clientId"] | "esp32";
 	appConfig.deviceCode = doc["mqtt"]["device_code"] | "SmartCompost001";
+	appConfig.pointDeviceCodes.clear();
+	JsonArray pointCodes = doc["mqtt"]["point_device_codes"].as<JsonArray>();
+	if (!pointCodes.isNull()) {
+		for (JsonVariant v : pointCodes)
+			appConfig.pointDeviceCodes.push_back(v.as<String>());
+	}
 	// post_topic 和 response_topic 现在自动根据 device_code 生成
 
 	// NTP servers
@@ -89,14 +109,16 @@ bool loadConfigFromSPIFFS(const char* path) {
 	}
 
 	// 控制参数
-	appConfig.pumpRunTime = doc["pump_run_time"] | 60000;
+	appConfig.sampleTime = doc["sample_time"] | 120000;
+	appConfig.purgePumpTime = doc["purge_pump_time"] | 15000;
 	appConfig.readInterval = doc["read_interval"] | 600000;
+	ensurePointDeviceCodes();
 
 	return true;
 }
 
 bool saveConfigToSPIFFS(const char* path) {
-	StaticJsonDocument<4096> doc;
+	StaticJsonDocument<8192> doc;
 
 	// WiFi
 	doc["wifi"]["ssid"] = appConfig.wifiSSID;
@@ -109,6 +131,9 @@ bool saveConfigToSPIFFS(const char* path) {
 	doc["mqtt"]["pass"] = appConfig.mqttPass;
 	doc["mqtt"]["clientId"] = appConfig.mqttClientId;
 	doc["mqtt"]["device_code"] = appConfig.deviceCode;
+	JsonArray pointCodes = doc["mqtt"].createNestedArray("point_device_codes");
+	for (auto& code : appConfig.pointDeviceCodes)
+		pointCodes.add(code);
 	// post_topic 和 response_topic 根据 device_code 自动生成，不需要保存
 
 	// NTP
@@ -117,7 +142,8 @@ bool saveConfigToSPIFFS(const char* path) {
 		ntpArr.add(s);
 
 	// 控制参数
-	doc["pump_run_time"] = appConfig.pumpRunTime;
+	doc["sample_time"] = appConfig.sampleTime;
+	doc["purge_pump_time"] = appConfig.purgePumpTime;
 	doc["read_interval"] = appConfig.readInterval;
 
 	// 写回文件
@@ -143,6 +169,8 @@ void printConfig(const AppConfig& cfg) {
 	Serial.println("WiFi SSID: " + cfg.wifiSSID);
 	Serial.println("MQTT Server: " + cfg.mqttServer);
 	Serial.println("Device Code: " + cfg.deviceCode);
+	for (size_t i = 0; i < cfg.pointDeviceCodes.size(); ++i)
+		Serial.printf("Point %u Device Code: %s\n", (unsigned)(i + 1), cfg.pointDeviceCodes[i].c_str());
 
 	Serial.println("---------------------");
 }

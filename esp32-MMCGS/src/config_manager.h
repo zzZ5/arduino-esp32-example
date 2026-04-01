@@ -5,6 +5,8 @@
 #include <vector>
 
 struct AppConfig {
+	static constexpr size_t kPointCount = 6;
+
 	String wifiSSID;
 	String wifiPass;
 
@@ -16,10 +18,14 @@ struct AppConfig {
 
 	// 设备代码（用于生成 MQTT topic）
 	String deviceCode;
+	std::vector<String> pointDeviceCodes;
 
 	// 自动生成的 MQTT topics
 	String mqttPostTopic() const {
 		return "compostlab/v2/" + deviceCode + "/telemetry";
+	}
+	String mqttPostTopic(const String& code) const {
+		return "compostlab/v2/" + code + "/telemetry";
 	}
 	String mqttResponseTopic() const {
 		return "compostlab/v2/" + deviceCode + "/response";
@@ -27,7 +33,11 @@ struct AppConfig {
 
 	std::vector<String> ntpServers;
 
-	uint32_t pumpRunTime;
+	// 单个采样点的抽气检测总时长（毫秒）。
+	uint32_t sampleTime;
+	// 点位之间用于清空气路的吹扫时长（毫秒）。
+	uint32_t purgePumpTime;
+	// 整轮巡检的启动周期（毫秒）。
 	uint32_t readInterval;
 };
 

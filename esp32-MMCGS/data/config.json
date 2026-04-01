@@ -8,13 +8,22 @@
     "port": 1883,
     "user": "equipment",
     "pass": "ZNXK8888",
-    "device_code": "MMCGS001"
+    "device_code": "MMCGS001",
+    "point_device_codes": [
+      "MMCGS001-P1",
+      "MMCGS001-P2",
+      "MMCGS001-P3",
+      "MMCGS001-P4",
+      "MMCGS001-P5",
+      "MMCGS001-P6"
+    ]
   },
   "ntp_servers": [
     "ntp.ntsc.ac.cn",
     "ntp.aliyun.com",
     "cn.ntp.org.cn"
   ],
-  "pump_run_time": 60000,
-  "read_interval": 120000
+  "sample_time": 150000,
+  "purge_pump_time": 30000,
+  "read_interval": 1200000
 }

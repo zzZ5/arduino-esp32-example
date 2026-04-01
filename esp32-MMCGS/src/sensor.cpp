@@ -297,7 +297,9 @@ namespace {
   ZCE04BSensor* g_zce04b = nullptr;
   SHT30SensorImpl* g_sht30 = nullptr;
 
-  int g_pumpPin = -1;
+  static constexpr size_t kMaxPumpCount = 8;
+  int g_pumpPins[kMaxPumpCount] = { -1, -1, -1, -1, -1, -1, -1, -1 };
+  size_t g_pumpCount = 0;
 
   void destroySensors() {
     delete g_mhz16;
@@ -312,7 +314,8 @@ namespace {
 }  // namespace
 
 bool initSensorAndPump(
-  int pumpPin,
+  const uint8_t* pumpPins,
+  size_t pumpCount,
   HardwareSerial& mhzSerial,
   int mhzRxPin,
   int mhzTxPin,
@@ -326,9 +329,16 @@ bool initSensorAndPump(
 
   destroySensors();
 
-  g_pumpPin = pumpPin;
-  pinMode(g_pumpPin, OUTPUT);
-  digitalWrite(g_pumpPin, LOW);
+  if (!pumpPins || pumpCount == 0 || pumpCount > kMaxPumpCount) {
+    Serial.println("[Sensor] Invalid pump pin configuration");
+    return false;
+  }
+  g_pumpCount = pumpCount;
+  for (size_t i = 0; i < g_pumpCount; ++i) {
+    g_pumpPins[i] = pumpPins[i];
+    pinMode(g_pumpPins[i], OUTPUT);
+    digitalWrite(g_pumpPins[i], LOW);
+  }
 
   g_mhz16 = new MHZ16Sensor(mhzSerial, mhzRxPin, mhzTxPin);
   g_zce04b = new ZCE04BSensor(zceSerial, zceRxPin, zceTxPin);
@@ -370,15 +380,23 @@ bool initSensorAndPump(
   return true;
 }
 
-void exhaustPumpOn() {
-  if (g_pumpPin >= 0) {
-    digitalWrite(g_pumpPin, HIGH);
+void pumpOn(size_t index) {
+  if (index < g_pumpCount && g_pumpPins[index] >= 0) {
+    digitalWrite(g_pumpPins[index], HIGH);
   }
 }
 
-void exhaustPumpOff() {
-  if (g_pumpPin >= 0) {
-    digitalWrite(g_pumpPin, LOW);
+void pumpOff(size_t index) {
+  if (index < g_pumpCount && g_pumpPins[index] >= 0) {
+    digitalWrite(g_pumpPins[index], LOW);
+  }
+}
+
+void allPumpsOff() {
+  for (size_t i = 0; i < g_pumpCount; ++i) {
+    if (g_pumpPins[i] >= 0) {
+      digitalWrite(g_pumpPins[i], LOW);
+    }
   }
 }
 
