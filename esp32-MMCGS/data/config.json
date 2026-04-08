@@ -23,7 +23,8 @@
     "ntp.aliyun.com",
     "cn.ntp.org.cn"
   ],
-  "sample_time": 150000,
+  "sample_time": 15000,
+  "static_measure_time": 30000,
   "purge_pump_time": 30000,
-  "read_interval": 1200000
+  "read_interval": 600000
 }

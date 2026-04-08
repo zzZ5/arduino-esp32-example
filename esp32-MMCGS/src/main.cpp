@@ -76,15 +76,14 @@ static constexpr unsigned long COMMAND_SLICE_MS = 5000;
 static constexpr unsigned long CACHE_UPLOAD_INTERVAL_MS = 30000;
 
 // 采样流程默认参数：
-// 总检测时长来自 sample_time；如果配置缺失就退回默认值。
-static constexpr unsigned long DEFAULT_SAMPLE_DETECTION_MS = 120000;
-// 自动推导观察期时使用的默认下限参考。
-static constexpr unsigned long DEFAULT_SAMPLE_STABILIZATION_MS = 30000;
-// 单点抽气过程中的固定采样间隔。
-static constexpr unsigned long DEFAULT_SAMPLE_INTERVAL_MS = 10000;
-// 自动观察期允许的最小/最大范围。
-static constexpr unsigned long MIN_SAMPLE_STABILIZATION_MS = 20000;
-static constexpr unsigned long MAX_SAMPLE_STABILIZATION_MS = 60000;
+// sample_time 现在表示“取样抽气时长”，只负责把有限气体抽到传感器腔体。
+static constexpr unsigned long DEFAULT_SAMPLE_INTAKE_MS = 10000;
+// 停泵后的静态检测窗口，在这个窗口里尽量少消耗气体、连续观察趋势。
+static constexpr unsigned long DEFAULT_STATIC_MEASURE_WINDOW_MS = 30000;
+// 静态检测阶段的固定采样间隔。
+static constexpr unsigned long DEFAULT_STATIC_SAMPLE_INTERVAL_MS = 5000;
+// 停泵后的最小观察期。先观察几次，再开始判稳，避免刚停泵就立刻下结论。
+static constexpr unsigned long DEFAULT_STATIC_STABILIZATION_MS = 10000;
 
 // 判稳窗口至少要有这么多个有效点才开始算趋势。
 static constexpr size_t STABILITY_MIN_VALID_SAMPLES = 3;
@@ -96,9 +95,9 @@ static constexpr float CO2_STABILITY_REFERENCE_MIN_PPM = 800.0f;
 static constexpr float O2_STABILITY_REFERENCE_MIN_PERCENT = 5.0f;
 
 // 采样策略说明：
-// 1. 每个点位连续抽气 sample_time。
-// 2. 抽气过程中每 10 秒读一次完整气体数据。
-// 3. 先经过一个自动推导出的“最小观察期”，避免刚切换气路就判稳。
+// 1. 先短时间抽气 sample_time，把有限气体送到传感器腔体。
+// 2. 然后停泵，在静态窗口里连续读数据，尽量减少继续耗气。
+// 3. 先经过一个最小观察期，避免刚停泵时残余流动影响判稳。
 // 4. 之后同时检查 CO2 和 O2 的相对变化率，双通道都足够平稳才算进入稳态。
 // 5. 稳态样本最终用抗异常值统计，而不是简单求平均。
 
@@ -113,6 +112,8 @@ std::vector<PendingCommand> pendingCommands;
 static SemaphoreHandle_t g_cmdMutex = nullptr;
 static volatile bool g_pendingRestart = false;
 static unsigned long g_restartAtMs = 0;
+// 自动巡检进行中时，禁止远程手动泵控，避免打乱当前气路。
+static volatile bool g_measurementInProgress = false;
 
 // =====================================================
 // 工具：从 JsonVariant 读 String（空则返回 defaultVal）
@@ -149,10 +150,11 @@ static void appendChannel(
 }
 
 static void runPumpForDuration(size_t pumpIndex, unsigned long durationMs) {
-  pumpOn(pumpIndex);
   if (durationMs == 0) {
+    pumpOff(pumpIndex);
     return;
   }
+  pumpOn(pumpIndex);
 
   unsigned long remaining = durationMs;
   while (remaining > 0) {
@@ -186,40 +188,35 @@ static int pumpIndexFromCommand(const String& cmd) {
   if (cmd.startsWith("point")) {
     int pointNo = cmd.substring(5).toInt();
     if (pointNo >= 1 && pointNo <= (int)POINT_COUNT) {
-      return pointNo - 1;
+        return pointNo - 1;
+      }
     }
-  }
-  if (cmd == "pump") {
-    return 0;
-  }
   return -1;
 }
 
-static unsigned long effectiveSampleDetectionMs() {
-  return appConfig.sampleTime > 0 ? appConfig.sampleTime : DEFAULT_SAMPLE_DETECTION_MS;
+static unsigned long effectiveSampleIntakeMs() {
+  return appConfig.sampleTime > 0 ? appConfig.sampleTime : DEFAULT_SAMPLE_INTAKE_MS;
+}
+
+static unsigned long effectiveStaticMeasureWindowMs() {
+  return appConfig.staticMeasureTime > 0 ? appConfig.staticMeasureTime : DEFAULT_STATIC_MEASURE_WINDOW_MS;
 }
 
 static unsigned long effectiveSampleIntervalMs() {
-  // 采样间隔固定为 10 秒，减少配置项数量，便于现场维护。
-  return DEFAULT_SAMPLE_INTERVAL_MS;
+  return DEFAULT_STATIC_SAMPLE_INTERVAL_MS;
 }
 
 static unsigned long effectiveSampleStabilizationMs() {
-  // 最小观察期由总检测时长自动推导，不再单独暴露配置。
-  // 经验规则：取总时长的 1/4，并夹在 30~60 秒之间。
-  unsigned long detectionMs = effectiveSampleDetectionMs();
-  unsigned long stabilizationMs = detectionMs / 4;
-  stabilizationMs = max(stabilizationMs, MIN_SAMPLE_STABILIZATION_MS);
-  stabilizationMs = min(stabilizationMs, MAX_SAMPLE_STABILIZATION_MS);
-  stabilizationMs = max(stabilizationMs, DEFAULT_SAMPLE_STABILIZATION_MS);
-  if (stabilizationMs >= detectionMs) {
-    return detectionMs > 1000 ? (detectionMs - 1000) : 0;
+  unsigned long windowMs = effectiveStaticMeasureWindowMs();
+  unsigned long stabilizationMs = DEFAULT_STATIC_STABILIZATION_MS;
+  if (stabilizationMs >= windowMs) {
+    return windowMs > 1000 ? (windowMs - 1000) : 0;
   }
   return stabilizationMs;
 }
 
 static size_t estimatedSampleCount() {
-  return (size_t)((effectiveSampleDetectionMs() - 1) / effectiveSampleIntervalMs()) + 1;
+  return (size_t)((effectiveStaticMeasureWindowMs() - 1) / effectiveSampleIntervalMs()) + 1;
 }
 
 struct RobustSeries {
@@ -332,7 +329,7 @@ static bool isTrendStable(const std::vector<TimedSamplePoint>& history, float sl
 }
 
 static unsigned long estimatedMinCycleMs() {
-  return (unsigned long)POINT_COUNT * (effectiveSampleDetectionMs() + appConfig.purgePumpTime);
+  return (unsigned long)POINT_COUNT * (effectiveSampleIntakeMs() + effectiveStaticMeasureWindowMs() + appConfig.purgePumpTime);
 }
 
 static void logCycleBudget(const char* prefix) {
@@ -398,7 +395,7 @@ static void clearPointCompletion() {
 
 // =====================================================
 // 生成"完整当前配置"的 JSON（用于上线/回执）
-// 格式：{ "wifi": {...}, "mqtt": {...}, "ntp_servers": [...], "sample_time": ..., "purge_pump_time": ..., "read_interval": ... }
+// 格式：{ "wifi": {...}, "mqtt": {...}, "ntp_servers": [...], "sample_time": ..., "static_measure_time": ..., "purge_pump_time": ..., "read_interval": ... }
 // =====================================================
 static void fillConfigJson(JsonObject cfg) {
   // WiFi
@@ -422,6 +419,7 @@ static void fillConfigJson(JsonObject cfg) {
 
   // 控制参数
   cfg["sample_time"] = appConfig.sampleTime;
+  cfg["static_measure_time"] = appConfig.staticMeasureTime;
   cfg["purge_pump_time"] = appConfig.purgePumpTime;
   cfg["read_interval"] = appConfig.readInterval;
 }
@@ -471,12 +469,16 @@ static void publishOnlineWithConfig() {
 // =====================================================
 static bool updateAppConfigFromJson(JsonObject cfg) {
 
-  // -------- sample_time / purge_pump_time / read_interval --------
-  // 支持：sample_time, purge_pump_time, read_interval
-  // 兼容：post_interval(旧习惯) -> read_interval
+  // -------- sample_time / static_measure_time / purge_pump_time / read_interval --------
+  // 支持：sample_time, static_measure_time, purge_pump_time, read_interval
   if (cfg["sample_time"].is<uint32_t>()) {
     appConfig.sampleTime = cfg["sample_time"].as<uint32_t>();
     Serial.printf("[CFG] sample_time = %u\n", (unsigned)appConfig.sampleTime);
+  }
+
+  if (cfg["static_measure_time"].is<uint32_t>()) {
+    appConfig.staticMeasureTime = cfg["static_measure_time"].as<uint32_t>();
+    Serial.printf("[CFG] static_measure_time = %u\n", (unsigned)appConfig.staticMeasureTime);
   }
 
   if (cfg["purge_pump_time"].is<uint32_t>()) {
@@ -487,10 +489,6 @@ static bool updateAppConfigFromJson(JsonObject cfg) {
   if (cfg["read_interval"].is<uint32_t>()) {
     appConfig.readInterval = cfg["read_interval"].as<uint32_t>();
     Serial.printf("[CFG] read_interval = %u\n", (unsigned)appConfig.readInterval);
-  }
-  else if (cfg["post_interval"].is<uint32_t>()) { // 兼容旧字段名
-    appConfig.readInterval = cfg["post_interval"].as<uint32_t>();
-    Serial.printf("[CFG] read_interval(post_interval) = %u\n", (unsigned)appConfig.readInterval);
   }
 
   // -------- WiFi --------
@@ -580,6 +578,11 @@ static void executeCommand(const PendingCommand& pcmd) {
 
   int pumpIndex = pumpIndexFromCommand(pcmd.cmd);
   if (pumpIndex >= 0) {
+    if (g_measurementInProgress) {
+      Serial.printf("[CMD] Ignored manual pump command during measurement cycle: %s %s\n",
+        pcmd.cmd.c_str(), pcmd.action.c_str());
+      return;
+    }
     Serial.printf("[CMD] Pump command mapped to index=%d\n", pumpIndex);
     if (pcmd.action == "on") {
       runPumpForDuration((size_t)pumpIndex, pcmd.duration);
@@ -698,15 +701,17 @@ static void mqttCallback(char* topic, byte* payload, unsigned int length) {
 // 采样与上传（6 measurement points + 1 purge pump）
 // =====================================================
 static bool doMeasurementAndSave(size_t startPointIndex = 0, ResumePhase startPhase = ResumePhase::PointPump) {
-  const unsigned long sampleDetectionMs = effectiveSampleDetectionMs();
+  const unsigned long sampleIntakeMs = effectiveSampleIntakeMs();
+  const unsigned long staticMeasureWindowMs = effectiveStaticMeasureWindowMs();
   const unsigned long sampleStabilizationMs = effectiveSampleStabilizationMs();
   const unsigned long sampleIntervalMs = effectiveSampleIntervalMs();
   const size_t sampleCount = estimatedSampleCount();
-  Serial.printf("[Measure] Starting round-robin cycle (readInterval=%lu ms, detection=%lu ms, minObserve=%lu ms, sampleInterval=%lu ms, expectedSamples=%u, co2SlopeThreshold=%.1f %%/min, o2SlopeThreshold=%.2f %%/min, purgePumpTime=%lu ms)\n",
-    appConfig.readInterval, sampleDetectionMs, sampleStabilizationMs, sampleIntervalMs, (unsigned)sampleCount, CO2_STABLE_SLOPE_THRESHOLD_PERCENT_PER_MIN, O2_STABLE_SLOPE_THRESHOLD_PERCENT_PER_MIN, appConfig.purgePumpTime);
+  Serial.printf("[Measure] Starting round-robin cycle (readInterval=%lu ms, intake=%lu ms, staticWindow=%lu ms, minObserve=%lu ms, sampleInterval=%lu ms, expectedSamples=%u, co2SlopeThreshold=%.1f %%/min, o2SlopeThreshold=%.2f %%/min, purgePumpTime=%lu ms)\n",
+    appConfig.readInterval, sampleIntakeMs, staticMeasureWindowMs, sampleStabilizationMs, sampleIntervalMs, (unsigned)sampleCount, CO2_STABLE_SLOPE_THRESHOLD_PERCENT_PER_MIN, O2_STABLE_SLOPE_THRESHOLD_PERCENT_PER_MIN, appConfig.purgePumpTime);
   logCycleBudget("[Measure]");
 
   bool cycleOk = true;
+  g_measurementInProgress = true;
   time_t cycleStartEpoch = time(nullptr);
   if (startPointIndex == 0 && startPhase == ResumePhase::PointPump) {
     if (beginPrefs()) {
@@ -741,14 +746,18 @@ static bool doMeasurementAndSave(size_t startPointIndex = 0, ResumePhase startPh
       saveResumeState(true, pointIndex, ResumePhase::PointPump);
 
       allPumpsOff();
-      Serial.printf("[Measure] Point pump ON for detection window %lu ms (minimum observe=%lu ms, slope-based stability)\n",
-        sampleDetectionMs,
-        sampleStabilizationMs);
+      Serial.printf("[Measure] Point pump ON for intake %lu ms to pull limited gas into sensor chamber\n",
+        sampleIntakeMs);
       pumpOn(pointIndex);
+      delay(sampleIntakeMs);
+      pumpOff(pointIndex);
+      Serial.printf("[Measure] Point pump OFF, start static measure window %lu ms (minimum observe=%lu ms)\n",
+        staticMeasureWindowMs,
+        sampleStabilizationMs);
 
       // stable: 真正通过 CO2+O2 双通道判稳后的样本。
-      // fallback: 没判稳时，保留“观察期之后”的样本做兜底统计，
-      // 但最终 quality 会被标记为 UNSTABLE。
+      // fallback: 没判稳时，保留“观察期之后”的样本做兜底统计。
+      // 其中 CO2 / O2 会分别按各自的稳定结果标记 quality。
       StableAverages stable;
       stable.reserve(sampleCount);
       StableAverages fallback;
@@ -757,10 +766,13 @@ static bool doMeasurementAndSave(size_t startPointIndex = 0, ResumePhase startPh
       co2History.reserve(sampleCount);
       std::vector<TimedSamplePoint> o2History;
       o2History.reserve(sampleCount);
-      unsigned long pumpStartMs = millis();
+      unsigned long staticStartMs = millis();
       size_t sampleNo = 0;
       bool stableDetected = false;
-      while ((millis() - pumpStartMs) < sampleDetectionMs) {
+      bool latestCo2Stable = false;
+      bool latestO2Stable = false;
+      bool lastEnoughObserveTime = false;
+      while ((millis() - staticStartMs) < staticMeasureWindowMs) {
         sampleNo++;
         int co2ppmRaw = readMHZ16();
 
@@ -776,7 +788,7 @@ static bool doMeasurementAndSave(size_t startPointIndex = 0, ResumePhase startPh
         float t_air = shtOk ? shtData.temperature : -1.0f;
         float h_air = shtOk ? shtData.humidity : -1.0f;
 
-        unsigned long elapsedMs = millis() - pumpStartMs;
+        unsigned long elapsedMs = millis() - staticStartMs;
         if (co2ppmRaw > 0) {
           co2History.push_back({ elapsedMs, (float)co2ppmRaw });
         }
@@ -793,6 +805,9 @@ static bool doMeasurementAndSave(size_t startPointIndex = 0, ResumePhase startPh
           o2History,
           O2_STABLE_SLOPE_THRESHOLD_PERCENT_PER_MIN,
           O2_STABILITY_REFERENCE_MIN_PERCENT);
+        latestCo2Stable = co2StableNow;
+        latestO2Stable = o2StableNow;
+        lastEnoughObserveTime = enoughObserveTime;
         const bool trendStableNow = co2StableNow && o2StableNow;
         if (!stableDetected && trendStableNow) {
           stableDetected = true;
@@ -843,24 +858,27 @@ static bool doMeasurementAndSave(size_t startPointIndex = 0, ResumePhase startPh
           stable.airHumidity.add(h_air);
         }
 
-        if (elapsedMs >= sampleDetectionMs) {
+        if (elapsedMs >= staticMeasureWindowMs) {
           break;
         }
 
-        unsigned long remainingMs = sampleDetectionMs - elapsedMs;
+        unsigned long remainingMs = staticMeasureWindowMs - elapsedMs;
         delay(min(sampleIntervalMs, remainingMs));
       }
 
-      pumpOff(pointIndex);
       // 优先使用正式稳态结果；如果本轮一直没判稳，则回退到 fallback，
       // 但只给参与判稳的通道标记 UNSTABLE，其它通道仍按自身值判断质量。
-      const bool dualSlopeStable = stable.co2ppm.count() > 0;
-      const StableAverages& resultSet = dualSlopeStable ? stable : fallback;
-      const char* co2Quality = dualSlopeStable ? nullptr : "UNSTABLE";
-      const char* o2Quality = dualSlopeStable ? nullptr : "UNSTABLE";
-      if (!dualSlopeStable) {
-        Serial.printf("[Measure] Point %u did not reach dual-channel slope stability, fallback to post-observation robust values\n",
-          (unsigned)(pointIndex + 1));
+      const bool finalCo2Stable = lastEnoughObserveTime && latestCo2Stable;
+      const bool finalO2Stable = lastEnoughObserveTime && latestO2Stable;
+      const bool finalDualStable = finalCo2Stable && finalO2Stable && stable.co2ppm.count() > 0;
+      const StableAverages& resultSet = finalDualStable ? stable : fallback;
+      const char* co2Quality = finalCo2Stable ? nullptr : "UNSTABLE";
+      const char* o2Quality = finalO2Stable ? nullptr : "UNSTABLE";
+      if (!finalDualStable) {
+        Serial.printf("[Measure] Point %u final dual-channel stability not satisfied, fallback to post-observation robust values (co2Stable=%s, o2Stable=%s)\n",
+          (unsigned)(pointIndex + 1),
+          finalCo2Stable ? "yes" : "no",
+          finalO2Stable ? "yes" : "no");
       }
       Serial.println("[Measure] Point pump OFF, calculating robust stable values");
 
@@ -874,7 +892,7 @@ static bool doMeasurementAndSave(size_t startPointIndex = 0, ResumePhase startPh
       float h_air = resultSet.airHumidity.robustAverageOr();
 
       String ts = getTimeString();
-      Serial.printf("[Measure] Point %u robust-stable timestamp=%s, usedCounts(CO2=%u CO=%u H2S=%u O2=%u CH4=%u Temp=%u RH=%u), dualSlopeStable=%s, CO2=%.2f %%VOL, CO=%.1f, H2S=%.1f, O2=%.2f, CH4=%.1f, Temp=%.1f, RH=%.1f\n",
+      Serial.printf("[Measure] Point %u robust-stable timestamp=%s, usedCounts(CO2=%u CO=%u H2S=%u O2=%u CH4=%u Temp=%u RH=%u), finalDualStable=%s, co2Stable=%s, o2Stable=%s, CO2=%.2f %%VOL, CO=%.1f, H2S=%.1f, O2=%.2f, CH4=%.1f, Temp=%.1f, RH=%.1f\n",
         (unsigned)(pointIndex + 1),
         ts.c_str(),
         (unsigned)resultSet.co2ppm.count(),
@@ -884,7 +902,9 @@ static bool doMeasurementAndSave(size_t startPointIndex = 0, ResumePhase startPh
         (unsigned)resultSet.ch4.count(),
         (unsigned)resultSet.airTemp.count(),
         (unsigned)resultSet.airHumidity.count(),
-        dualSlopeStable ? "yes" : "no",
+        finalDualStable ? "yes" : "no",
+        finalCo2Stable ? "yes" : "no",
+        finalO2Stable ? "yes" : "no",
         co2pct,
         co,
         h2s,
@@ -946,8 +966,9 @@ static bool doMeasurementAndSave(size_t startPointIndex = 0, ResumePhase startPh
   allPumpsOff();
   clearPointCompletion();
   clearResumeState();
+  g_measurementInProgress = false;
   Serial.printf("[Measure] Round-robin cycle finished with status=%s\n", cycleOk ? "OK" : "WARN");
-  return true;
+  return cycleOk;
 }
 
 // =====================================================
@@ -965,18 +986,23 @@ static void measurementTask(void*) {
 
   while (true) {
     unsigned long cycleStartMs = millis();
+    bool cycleOk = true;
     if (g_resumePending) {
       Serial.printf("[Measure] Resuming interrupted cycle from point=%u, phase=%u\n",
         (unsigned)(g_resumePointIndex + 1),
         (unsigned)g_resumePhase);
-      doMeasurementAndSave(g_resumePointIndex, g_resumePhase);
+      cycleOk = doMeasurementAndSave(g_resumePointIndex, g_resumePhase);
       g_resumePending = false;
       g_resumePointIndex = 0;
       g_resumePhase = ResumePhase::Idle;
     }
     else {
       Serial.println("[Measure] Starting scheduled cycle");
-      doMeasurementAndSave();
+      cycleOk = doMeasurementAndSave();
+    }
+
+    if (!cycleOk) {
+      Serial.println("[Measure] Cycle finished with warnings or deferred uploads; scheduler will continue and rely on cache retry");
     }
 
     unsigned long cycleDurationMs = millis() - cycleStartMs;
@@ -1039,10 +1065,11 @@ void setup() {
     Serial.println("[System] Failed to load configuration, restarting");
     ESP.restart();
   }
-  Serial.printf("[System] Config loaded: controller=%s, readInterval=%lu ms, sampleTime=%lu ms, autoStabilization=%lu ms, sampleInterval=%lu ms, purgePumpTime=%lu ms\n",
+  Serial.printf("[System] Config loaded: controller=%s, readInterval=%lu ms, intakeTime=%lu ms, staticWindow=%lu ms, autoStabilization=%lu ms, sampleInterval=%lu ms, purgePumpTime=%lu ms\n",
     appConfig.deviceCode.c_str(),
     appConfig.readInterval,
-    effectiveSampleDetectionMs(),
+    effectiveSampleIntakeMs(),
+    effectiveStaticMeasureWindowMs(),
     effectiveSampleStabilizationMs(),
     effectiveSampleIntervalMs(),
     appConfig.purgePumpTime);
@@ -1082,8 +1109,8 @@ void setup() {
 
   // 5) 传感器初始化
   // 这里默认使用:
-  // MH-Z16 -> Serial1 RX=16 TX=17
-  // ZCE04B -> Serial2 RX=32 TX=33
+  // MH-Z16 -> Serial1 RX=18 TX=19
+  // ZCE04B -> Serial2 RX=16 TX=17
   // SHT30  -> I2C SDA=21 SCL=22
   // Pumps  -> P1=13 P2=14 P3=25 P4=26 P5=27 P6=32 Purge=33
   if (!initSensorAndPump(

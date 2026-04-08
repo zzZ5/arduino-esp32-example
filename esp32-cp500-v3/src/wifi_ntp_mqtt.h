@@ -5,16 +5,16 @@
 #include <Arduino.h>
 #include <PubSubClient.h>
 
-// ========== MQTT 客户端访问 ==========
-PubSubClient& getMQTTClient();  // 获取 MQTT 客户端引用（可用于设置回调）
+// ========== MQTT client access ==========
+PubSubClient& getMQTTClient();
 
-// ========== WiFi & NTP ==========
+// ========== WiFi and time sync ==========
 bool connectToWiFi(unsigned long timeoutMs);
 bool multiNTPSetup(unsigned long timeoutMs);
 String getTimeString();
-String getPublicIP();  // 获取公网IP地址
+String getPublicIP();
 
-// ========== MQTT 核心操作 ==========
+// ========== MQTT core operations ==========
 bool connectToMQTT(unsigned long timeoutMs);
 void maintainMQTT(unsigned long timeoutMs);
 bool publishData(const String& topic, const String& payload, unsigned long timeoutMs);

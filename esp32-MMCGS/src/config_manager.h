@@ -33,8 +33,10 @@ struct AppConfig {
 
 	std::vector<String> ntpServers;
 
-	// 单个采样点的抽气检测总时长（毫秒）。
+	// 单个采样点的取样抽气时长（毫秒），用于把有限气体送到传感器腔体。
 	uint32_t sampleTime;
+	// 停泵后静态检测的停留时长（毫秒）。
+	uint32_t staticMeasureTime;
 	// 点位之间用于清空气路的吹扫时长（毫秒）。
 	uint32_t purgePumpTime;
 	// 整轮巡检的启动周期（毫秒）。

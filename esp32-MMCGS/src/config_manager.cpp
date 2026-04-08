@@ -52,7 +52,8 @@ bool loadConfigFromSPIFFS(const char* path) {
 		appConfig.deviceCode = "SmartCompost001";
 		appConfig.pointDeviceCodes.clear();
 		appConfig.ntpServers = {"ntp.aliyun.com", "cn.ntp.org.cn"};
-		appConfig.sampleTime = 120000;
+		appConfig.sampleTime = 10000;
+		appConfig.staticMeasureTime = 30000;
 		appConfig.purgePumpTime = 15000;
 		appConfig.readInterval = 60000;
 		ensurePointDeviceCodes();
@@ -109,7 +110,8 @@ bool loadConfigFromSPIFFS(const char* path) {
 	}
 
 	// 控制参数
-	appConfig.sampleTime = doc["sample_time"] | 120000;
+	appConfig.sampleTime = doc["sample_time"] | 10000;
+	appConfig.staticMeasureTime = doc["static_measure_time"] | 30000;
 	appConfig.purgePumpTime = doc["purge_pump_time"] | 15000;
 	appConfig.readInterval = doc["read_interval"] | 600000;
 	ensurePointDeviceCodes();
@@ -143,6 +145,7 @@ bool saveConfigToSPIFFS(const char* path) {
 
 	// 控制参数
 	doc["sample_time"] = appConfig.sampleTime;
+	doc["static_measure_time"] = appConfig.staticMeasureTime;
 	doc["purge_pump_time"] = appConfig.purgePumpTime;
 	doc["read_interval"] = appConfig.readInterval;
 
