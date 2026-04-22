@@ -68,9 +68,8 @@ static void maintainNetwork() {
 		Serial.printf("[Network] No internet, fail count: %d/%d\n", networkFailCount, NETWORK_FAIL_LIMIT);
 
 		if (networkFailCount >= NETWORK_FAIL_LIMIT) {
-			Serial.println("[Network] No internet for too long, restarting...");
-			delay(1000);
-			ESP.restart();
+			Serial.println("[Network] Offline for a while, keep running and use local cache");
+			networkFailCount = NETWORK_FAIL_LIMIT;
 		}
 	} else {
 		networkFailCount = 0;  // 网络正常，重置计数器
@@ -98,9 +97,8 @@ static void maintainWiFi() {
 
 			// 连续失败超过限制，重启设备
 			if (wifiFailCount >= WIFI_FAIL_LIMIT) {
-				Serial.println("[WiFi] Too many failures, restarting device...");
-				delay(1000);
-				ESP.restart();
+				Serial.println("[WiFi] Too many failures, stay offline and keep retrying");
+				wifiFailCount = WIFI_FAIL_LIMIT;
 			}
 		} else {
 			// 连接成功，重置计数器

@@ -506,10 +506,15 @@ static void measurementTask(void*) {
   Serial.printf("[Measure] Task started, read_interval=%lu ms, pump_run_time=%lu ms\n",
     (unsigned long)appConfig.readInterval,
     (unsigned long)appConfig.pumpRunTime);
+  unsigned long lastWaitLogMs = 0;
 
   while (true) {
     // 使用无符号差值,避免 millis 溢出问题
-    if ((millis() - prevMeasureMs) >= appConfig.readInterval) {
+    unsigned long now = millis();
+    unsigned long elapsed = now - prevMeasureMs;
+    if (elapsed >= appConfig.readInterval) {
+      Serial.printf("[Measure] Due now, elapsed=%lu ms, interval=%lu ms\n",
+        elapsed, (unsigned long)appConfig.readInterval);
       prevMeasureMs = millis();
 
       // 重试机制：最多尝试 3 次
@@ -520,6 +525,11 @@ static void measurementTask(void*) {
         Serial.printf("[Measure] Retry %d failed, waiting 3s...\n", retry + 1);
         delay(3000);  // 减少延迟时间
       }
+    }
+    else if ((now - lastWaitLogMs) >= 60000UL) {
+      unsigned long remaining = appConfig.readInterval - elapsed;
+      lastWaitLogMs = now;
+      Serial.printf("[Measure] Waiting for next cycle, remaining=%lu ms\n", remaining);
     }
     vTaskDelay(1000 / portTICK_PERIOD_MS);  // 增加检查频率
   }

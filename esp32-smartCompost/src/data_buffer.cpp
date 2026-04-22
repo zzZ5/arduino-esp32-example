@@ -164,6 +164,8 @@ static bool loadCacheFromFile(std::vector<CacheItem>& items) {
     items.clear();
     items.reserve(arr.size());
 
+    int pendingCount = 0;
+    int uploadedCount = 0;
     for (JsonObject item : arr) {
         CacheItem cacheItem;
         cacheItem.topic = item["topic"].as<String>();
@@ -172,10 +174,18 @@ static bool loadCacheFromFile(std::vector<CacheItem>& items) {
         cacheItem.epoch = item["epoch"].as<unsigned long>();
         cacheItem.uploaded = item["uploaded"] | false;
         cacheItem.retryCount = item["retryCount"] | 0;
+        if (cacheItem.uploaded) {
+            uploadedCount++;
+        } else {
+            pendingCount++;
+        }
         items.push_back(cacheItem);
     }
 
-    Serial.printf("[Cache] Loaded %d items from file\n", items.size());
+    if (!items.empty()) {
+        Serial.printf("[Cache] Loaded %d items from file (%d pending, %d uploaded)\n",
+            (int)items.size(), pendingCount, uploadedCount);
+    }
     return true;
 }
 
