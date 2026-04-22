@@ -4,10 +4,29 @@
 #include <WiFi.h>
 #include <time.h>
 #include <HTTPClient.h>
+#include <freertos/FreeRTOS.h>
+#include <freertos/semphr.h>
+#include <esp_task_wdt.h>
+
+// Arduino loopTask is subscribed to the Task WDT (~5s). Long WiFi/MQTT waits
+// must reset it or the chip reboots (often mistaken for "random" restarts).
+static inline void feedTaskWatchdog() {
+	esp_task_wdt_reset();
+}
 
 // Global WiFi client and MQTT client.
 static WiFiClient espClient;
 PubSubClient mqttClient(espClient);
+
+// PubSubClient is not thread-safe. measurementTask (Core 1) publishes while
+// loop() runs mqttClient.loop() on Core 0; serialize all MQTT API usage.
+static SemaphoreHandle_t g_mqttMutex = nullptr;
+
+static void ensureMqttMutex() {
+	if (!g_mqttMutex) {
+		g_mqttMutex = xSemaphoreCreateMutex();
+	}
+}
 
 // Periodic WiFi health check state.
 static unsigned long lastWiFiCheck = 0;
@@ -34,6 +53,7 @@ static void maintainWiFi() {
 		Serial.println("[WiFi] Disconnected, reconnecting...");
 		WiFi.disconnect();
 		delay(500);
+		feedTaskWatchdog();
 		if (!connectToWiFi(10000)) {
 			Serial.println("[WiFi] Reconnect failed");
 			wifiFailCount++;
@@ -60,6 +80,7 @@ bool connectToWiFi(unsigned long timeoutMs) {
 	unsigned long start = millis();
 	while (WiFi.status() != WL_CONNECTED) {
 		delay(500);
+		feedTaskWatchdog();
 		if (millis() - start > timeoutMs) {
 			Serial.println("\n[WiFi] Timeout!");
 			return false;
@@ -79,6 +100,7 @@ static bool waitForSync(unsigned long waitMs) {
 			return true;
 		}
 		delay(100);
+		feedTaskWatchdog();
 	}
 	return false;
 }
@@ -118,6 +140,7 @@ bool multiNTPSetup(unsigned long totalTimeoutMs) {
 			}
 			Serial.println("[NTP] All failed, retry after 2s...");
 			delay(2000);
+			feedTaskWatchdog();
 		}
 	}
 
@@ -146,6 +169,8 @@ String getTimeString() {
 bool connectToMQTT(unsigned long timeoutMs) {
 	mqttClient.setServer(appConfig.mqttServer.c_str(), appConfig.mqttPort);
 	mqttClient.setBufferSize(1024);
+	// Cap blocking TCP time per attempt so loopTask can satisfy the TWDT.
+	espClient.setTimeout(4000);
 
 	unsigned long start = millis();
 	while (!mqttClient.connected()) {
@@ -159,6 +184,7 @@ bool connectToMQTT(unsigned long timeoutMs) {
 			return false;
 		}
 
+		feedTaskWatchdog();
 		Serial.printf("[MQTT] Connecting to %s:%d...\n", appConfig.mqttServer.c_str(), appConfig.mqttPort);
 		if (mqttClient.connect(appConfig.mqttClientId.c_str(),
 			appConfig.mqttUser.c_str(),
@@ -181,6 +207,7 @@ bool connectToMQTT(unsigned long timeoutMs) {
 		else {
 			Serial.printf("[MQTT] Fail, state=%d. Retry in 300ms\n", mqttClient.state());
 			delay(300);
+			feedTaskWatchdog();
 		}
 	}
 
@@ -233,21 +260,42 @@ String getPublicIP() {
 void maintainMQTT(unsigned long timeoutMs) {
 	maintainWiFi();
 
+	ensureMqttMutex();
+	// Do not block loop() on the mutex: publishData may hold it for many seconds.
+	if (xSemaphoreTake(g_mqttMutex, pdMS_TO_TICKS(120)) != pdTRUE) {
+		return;
+	}
+
 	if (!mqttClient.connected()) {
 		Serial.println("[MQTT] Not connected, reconnecting...");
-		connectToMQTT(timeoutMs);
+		// One short reconnect attempt per loop() — avoids TWDT when broker is down.
+		unsigned long slice = timeoutMs;
+		if (slice > 4000UL) {
+			slice = 4000UL;
+		}
+		connectToMQTT(slice);
 	}
-	mqttClient.loop();
+	if (mqttClient.connected()) {
+		mqttClient.loop();
+	}
+	xSemaphoreGive(g_mqttMutex);
 }
 
 bool publishData(const String& topic, const String& payload, unsigned long timeoutMs) {
-	unsigned long start = millis();
-
+	ensureMqttMutex();
 	maintainWiFi();
+
+	if (xSemaphoreTake(g_mqttMutex, portMAX_DELAY) != pdTRUE) {
+		return false;
+	}
+
+	bool ok = false;
+	unsigned long start = millis();
 
 	while (!mqttClient.connected()) {
 		if (millis() - start > timeoutMs) {
 			Serial.printf("[MQTT] publishData: connect timeout >%lu ms\n", timeoutMs);
+			xSemaphoreGive(g_mqttMutex);
 			return false;
 		}
 		maintainWiFi();
@@ -255,24 +303,28 @@ bool publishData(const String& topic, const String& payload, unsigned long timeo
 	}
 
 	while (millis() - start < timeoutMs) {
+		mqttClient.loop();
 		if (mqttClient.publish(topic.c_str(), payload.c_str())) {
 			Serial.println("[MQTT] Publish success:");
 			Serial.println(payload);
-			return true;
+			ok = true;
+			break;
 		}
-		else {
-			Serial.printf("[MQTT] Publish fail, state=%d. Retry in 300ms\n", mqttClient.state());
-			delay(300);
-
-			maintainWiFi();
-			if (!mqttClient.connected()) {
-				connectToMQTT(timeoutMs - (millis() - start));
-			}
+		Serial.printf("[MQTT] Publish fail, state=%d. Retry in 300ms\n", mqttClient.state());
+		delay(300);
+		feedTaskWatchdog();
+		maintainWiFi();
+		if (!mqttClient.connected()) {
+			connectToMQTT(timeoutMs - (millis() - start));
 		}
 	}
 
-	Serial.printf("[MQTT] publishData: overall timeout >%lu ms\n", timeoutMs);
-	return false;
+	if (!ok) {
+		Serial.printf("[MQTT] publishData: overall timeout >%lu ms\n", timeoutMs);
+	}
+
+	xSemaphoreGive(g_mqttMutex);
+	return ok;
 }
 
 // Publish immediately when possible, otherwise persist data locally for later upload.

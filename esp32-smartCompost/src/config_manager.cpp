@@ -90,7 +90,8 @@ bool loadConfigFromSPIFFS(const char* path) {
 
 	// 控制参数
 	appConfig.pumpRunTime = doc["pump_run_time"] | 60000;
-	appConfig.readInterval = doc["read_interval"] | 600000;
+	// Default 60s; 600000 was easy to mistake for "no data for a long time" when key is missing.
+	appConfig.readInterval = doc["read_interval"] | 60000;
 
 	return true;
 }

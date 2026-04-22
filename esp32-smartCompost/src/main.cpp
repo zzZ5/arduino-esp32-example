@@ -27,6 +27,7 @@
 #include <ArduinoJson.h>
 #include <freertos/FreeRTOS.h>
 #include <freertos/semphr.h>
+#include <esp_task_wdt.h>
 
 #include "config_manager.h"
 #include "wifi_ntp_mqtt.h"
@@ -242,8 +243,8 @@ static void executeCommand(const PendingCommand& pcmd) {
           unsigned long chunk = min(remaining, (unsigned long)5000);
           delay(chunk);
           remaining -= chunk;
-          // 喂狗，防止 watchdog 复位
           yield();
+          esp_task_wdt_reset();
         }
         aerationOff();
       }
@@ -265,8 +266,8 @@ static void executeCommand(const PendingCommand& pcmd) {
           unsigned long chunk = min(remaining, (unsigned long)5000);
           delay(chunk);
           remaining -= chunk;
-          // 喂狗，防止 watchdog 触发
           yield();
+          esp_task_wdt_reset();
         }
         exhaustPumpOff();
       }
@@ -377,9 +378,18 @@ static void mqttCallback(char* topic, byte* payload, unsigned int length) {
 static bool doMeasurementAndSave() {
   Serial.println("[Measure] 开始采样");
 
-  // 抽气
+  // 抽气（长时间 delay 会触发任务看门狗，分段喂狗）
   exhaustPumpOn();
-  delay(appConfig.pumpRunTime);
+  {
+    unsigned long remaining = appConfig.pumpRunTime;
+    while (remaining > 0) {
+      unsigned long chunk = min(remaining, (unsigned long)4000);
+      delay(chunk);
+      remaining -= chunk;
+      yield();
+      esp_task_wdt_reset();
+    }
+  }
   exhaustPumpOff();
 
   // CO2 平均
@@ -595,10 +605,22 @@ void setup() {
     ESP.restart();
   }
 
-  // 4) MQTT
-  if (!connectToMQTT(20000)) {
-    Serial.println("[System] MQTT 连接失败，重启");
-    ESP.restart();
+  // 4) MQTT（多次尝试，避免偶发超时直接进入重启循环）
+  {
+    bool mqttOk = false;
+    for (int attempt = 0; attempt < 6 && !mqttOk; attempt++) {
+      if (attempt > 0) {
+        Serial.printf("[MQTT] Setup 重试 %d/5...\n", attempt);
+        delay(2000);
+      }
+      if (connectToMQTT(25000)) {
+        mqttOk = true;
+      }
+    }
+    if (!mqttOk) {
+      Serial.println("[System] MQTT 连接失败，重启");
+      ESP.restart();
+    }
   }
 
   getMQTTClient().setCallback(mqttCallback);
