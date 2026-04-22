@@ -32,7 +32,7 @@
   "aeration_timer": {
     "enabled": true,
     "interval": 300000,
-    "duration": 300000
+    "duration": 120000
   },
   "safety": {
     "tank_temp_max": 90.0

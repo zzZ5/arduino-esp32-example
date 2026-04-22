@@ -1,4 +1,4 @@
-// main.cpp  (ESP32 + Arduino + PlatformIO)
+﻿// main.cpp  (ESP32 + Arduino + PlatformIO)
 //
 // 目标：
 // 1) 与 config_manager.cpp 的字段/含义保持一致：pump_run_time、read_interval、mqtt(post_topic/response_topic)、ntp_servers、keys( CO2/O2/RoomTemp/AirTemp/AirHumidity )
@@ -468,25 +468,33 @@ static bool doMeasurementAndSave() {
 
   payload += "]}";
 
-  // 使用带缓存功能的发布
-  if (publishDataOrCache(appConfig.mqttPostTopic(), payload, ts, 10000)) {
-    // 上传成功，更新NVS中的上次测量时间
+  bool uploaded = publishData(appConfig.mqttPostTopic(), payload, 10000);
+  if (!uploaded) {
+    Serial.println("[Measure] Live upload failed, trying local cache...");
+    if (!savePendingData(appConfig.mqttPostTopic(), payload, ts)) {
+      Serial.println("[Measure] Cache save failed");
+      return false;
+    }
+    Serial.println("[Measure] Upload failed, data cached locally");
+  }
+
+  if (nowEpoch > 0) {
     preferences.begin(NVS_NAMESPACE, false);
     preferences.putULong(NVS_KEY_LAST_MEAS, (unsigned long)nowEpoch);
     preferences.end();
-
-    // 上传成功后，尝试上传缓存的数据（最多10条）
-    int uploaded = uploadCachedData(10);
-    if (uploaded > 0) {
-      Serial.printf("[Measure] Uploaded %d cached data items\n", uploaded);
-    }
-
-    Serial.println("[Measure] 上传成功");
-    return true;
   }
 
-  Serial.println("[Measure] 上传失败，数据已缓存");
-  return false;
+  if (uploaded) {
+    int uploadedCount = uploadCachedData(10);
+    if (uploadedCount > 0) {
+      Serial.printf("[Measure] Uploaded %d cached data items\n", uploadedCount);
+    }
+    Serial.println("[Measure] Upload success");
+  }
+  else {
+    Serial.println("[Measure] Sample handled by local cache");
+  }
+  return true;
 }
 
 // =====================================================
@@ -495,6 +503,9 @@ static bool doMeasurementAndSave() {
 static void measurementTask(void*) {
   // 启动后延迟，确保与上线消息之间至少间隔 1000ms
   delay(1000);
+  Serial.printf("[Measure] Task started, read_interval=%lu ms, pump_run_time=%lu ms\n",
+    (unsigned long)appConfig.readInterval,
+    (unsigned long)appConfig.pumpRunTime);
 
   while (true) {
     // 使用无符号差值,避免 millis 溢出问题
@@ -629,9 +640,8 @@ void setup() {
         Serial.println("[Time] Interval exceeded, measuring immediately...");
         doMeasurementAndSave();
         // 将 prevMeasureMs 设置为应该上一次测量的时间点，确保下次测量间隔正确
-        prevMeasureMs = millis() - elapsedMs;
-        unsigned long nextDelayMs = appConfig.readInterval - (elapsedMs % appConfig.readInterval);
-        Serial.printf("[Time] Next measure in %lu ms\n", nextDelayMs);
+        prevMeasureMs = millis();
+        Serial.printf("[Time] Next measure in %lu ms\n", (unsigned long)appConfig.readInterval);
       }
       else {
         // 还未到间隔，等待剩余时间
