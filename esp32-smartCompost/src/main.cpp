@@ -1,24 +1,23 @@
 ﻿// main.cpp  (ESP32 + Arduino + PlatformIO)
+// Main application entry for the ESP32 compost monitor.
 //
-// 目标：
-// 1) 与 config_manager.cpp 的字段/含义保持一致：pump_run_time、read_interval、mqtt(post_topic/response_topic)、ntp_servers、keys( CO2/O2/RoomTemp/AirTemp/AirHumidity )
-// 2) MQTT 指令统一入口：restart / aeration / exhaust / config_update
-// 3) 第一次连接 MQTT 后发布上线消息，同时把"完整当前配置"一并上传
-// 4) config_update 只更新指令里出现的字段，其它保持原状；保存到 /config.json 后重启生效
+// Goals:
+// 1) Keep runtime fields aligned with config_manager.cpp.
+// 2) Use one MQTT command entry point for restart / aeration / exhaust / config_update.
+// 3) Publish a register message after the first MQTT connection and include the full config.
+// 4) Apply partial config updates, save them to /config.json, and reboot to take effect.
 //
-// 依赖：
-// - config_manager.h/.cpp（你给的版本）
-// - wifi_ntp_mqtt.h/.cpp（提供 connectToWiFi/multiNTPSetup/connectToMQTT/publishData/maintainMQTT/getMQTTClient 等）
-// - sensor.h/.cpp（提供 initSensorAndPump/readMHZ16/readEOxygen/readDS18B20/readSHT30Temp/readSHT30Hum/aerationOn/aerationOff/exhaustPumpOn/exhaustPumpOff）
-// - log_manager.h/.cpp（可选）
+// Dependencies:
+// - config_manager.h/.cpp
+// - wifi_ntp_mqtt.h/.cpp
+// - sensor.h/.cpp
+// - log_manager.h/.cpp (optional)
 //
-// 注意：
-// - 你之前遇到的 ArduinoJson v7 报错（doc["device"] != String）已修复：改为先 as<String>() 再比较
-// - 兼容 config_update / update_config 两种命令名
-// - 兼容 read_interval / post_interval 两种字段名（最终统一存 read_interval）
-// - keys 支持两种写法：
-//      A) 与 config_manager.cpp 一致：keys: { "CO2": "...", "O2": "...", "RoomTemp": "...", ... }
-//      B) 兼容你之前习惯的小写：keys: { "co2": "...", "o2": "...", "temp": "...", ... }
+// Notes:
+// - The ArduinoJson v7 device string comparison issue is already fixed.
+// - Both config_update and update_config are accepted.
+// - Both read_interval and post_interval are accepted and normalized to read_interval.
+// - keys can be provided in either canonical or legacy lowercase form.
 
 #include <Arduino.h>
 #include <WiFi.h>
@@ -34,13 +33,13 @@
 #include "sensor.h"
 #include "data_buffer.h"
 
-// ======================= 持久化 =======================
+// ======================= Persistence =======================
 Preferences preferences;
 static const char* NVS_NAMESPACE = "my-nvs";
 static const char* NVS_KEY_LAST_MEAS = "lastMeas";
 static unsigned long prevMeasureMs = 0;
 
-// ======================= 命令队列 =======================
+// ======================= Command Queue =======================
 struct PendingCommand {
   String cmd;
   String action;
@@ -54,7 +53,7 @@ static volatile bool g_pendingRestart = false;
 static unsigned long g_restartAtMs = 0;
 
 // =====================================================
-// 工具：从 JsonVariant 读 String（空则返回 defaultVal）
+// Read a String from JsonVariant and fall back to defaultVal when empty.
 // =====================================================
 static String readStr(JsonVariant v, const char* defaultVal = "") {
   if (v.is<const char*>()) return String(v.as<const char*>());
@@ -63,7 +62,7 @@ static String readStr(JsonVariant v, const char* defaultVal = "") {
 }
 
 // =====================================================
-// 工具：解析 schedule（"YYYY-MM-DD HH:MM:SS"），失败则返回 now
+// Parse schedule ("YYYY-MM-DD HH:MM:SS"), or fall back to now.
 // =====================================================
 static time_t parseScheduleOrNow(const String& schedule) {
   time_t target = time(nullptr);
@@ -77,8 +76,8 @@ static time_t parseScheduleOrNow(const String& schedule) {
 }
 
 // =====================================================
-// 生成"完整当前配置"的 JSON（用于上线/回执）
-// 格式：{ "wifi": {...}, "mqtt": {...}, "ntp_servers": [...], "pump_run_time": ..., "read_interval": ... }
+// Build the full configuration JSON used by register and reply payloads.
+// Format: { "wifi": {...}, "mqtt": {...}, "ntp_servers": [...], "pump_run_time": ..., "read_interval": ... }
 // =====================================================
 static void fillConfigJson(JsonObject cfg) {
   // WiFi
@@ -98,14 +97,14 @@ static void fillConfigJson(JsonObject cfg) {
   JsonArray ntps = cfg["ntp_servers"].to<JsonArray>();
   for (auto& s : appConfig.ntpServers) ntps.add(s);
 
-  // 控制参数
+  // Control parameters
   cfg["pump_run_time"] = appConfig.pumpRunTime;
   cfg["read_interval"] = appConfig.readInterval;
 }
 
 // =====================================================
-// 发布上线消息（带完整配置）
-// topic: compostlab/v2/{device_code}/register
+// Publish the online/register message with the full configuration.
+// Topic: compostlab/v2/{device_code}/register
 // =====================================================
 static void publishOnlineWithConfig() {
   Serial.println("[Register] 准备发布上线消息...");
@@ -113,7 +112,7 @@ static void publishOnlineWithConfig() {
   JsonDocument doc;
   doc["schema_version"] = 2;
 
-  // 使用公网 IP 地址
+  // Use the public IP address when available.
   String ipAddress = getPublicIP();
   doc["ip_address"] = ipAddress;
 
@@ -129,7 +128,7 @@ static void publishOnlineWithConfig() {
   serializeJson(doc, out);
   Serial.printf("[Register] Payload size: %d bytes\n", out.length());
 
-  // 使用注册 topic: compostlab/v2/{device_code}/register
+  // Publish to the register topic.
   String registerTopic = "compostlab/v2/" + appConfig.deviceCode + "/register";
   Serial.printf("[Register] Topic: %s\n", registerTopic.c_str());
 
@@ -143,14 +142,14 @@ static void publishOnlineWithConfig() {
 }
 
 // =====================================================
-// 远程配置更新：只更新指令里出现的字段，其它保持原状
-// 与 config_manager.cpp 存储结构保持一致（/config.json）
+// Apply a partial remote configuration update and preserve unspecified fields.
+// The stored format must stay aligned with config_manager.cpp (/config.json).
 // =====================================================
 static bool updateAppConfigFromJson(JsonObject cfg) {
 
   // -------- pump_run_time / read_interval --------
-  // 支持：pump_run_time, read_interval
-  // 兼容：post_interval(旧习惯) -> read_interval
+  // Accept pump_run_time and read_interval.
+  // Also accept the legacy post_interval field and map it to read_interval.
   if (cfg["pump_run_time"].is<uint32_t>()) {
     appConfig.pumpRunTime = cfg["pump_run_time"].as<uint32_t>();
     Serial.printf("[CFG] pump_run_time = %u\n", (unsigned)appConfig.pumpRunTime);
@@ -160,7 +159,7 @@ static bool updateAppConfigFromJson(JsonObject cfg) {
     appConfig.readInterval = cfg["read_interval"].as<uint32_t>();
     Serial.printf("[CFG] read_interval = %u\n", (unsigned)appConfig.readInterval);
   }
-  else if (cfg["post_interval"].is<uint32_t>()) { // 兼容旧字段名
+  else if (cfg["post_interval"].is<uint32_t>()) { // Legacy field name.
     appConfig.readInterval = cfg["post_interval"].as<uint32_t>();
     Serial.printf("[CFG] read_interval(post_interval) = %u\n", (unsigned)appConfig.readInterval);
   }
@@ -498,10 +497,10 @@ static bool doMeasurementAndSave() {
 }
 
 // =====================================================
-// 任务：定时测量
+// Periodic measurement task.
 // =====================================================
 static void measurementTask(void*) {
-  // 启动后延迟，确保与上线消息之间至少间隔 1000ms
+  // Delay startup slightly so the register message is not emitted at the same moment.
   delay(1000);
   Serial.printf("[Measure] Task started, read_interval=%lu ms, pump_run_time=%lu ms\n",
     (unsigned long)appConfig.readInterval,
@@ -509,7 +508,7 @@ static void measurementTask(void*) {
   unsigned long lastWaitLogMs = 0;
 
   while (true) {
-    // 使用无符号差值,避免 millis 溢出问题
+    // Use unsigned subtraction so millis() overflow is handled safely.
     unsigned long now = millis();
     unsigned long elapsed = now - prevMeasureMs;
     if (elapsed >= appConfig.readInterval) {
@@ -517,13 +516,13 @@ static void measurementTask(void*) {
         elapsed, (unsigned long)appConfig.readInterval);
       prevMeasureMs = millis();
 
-      // 重试机制：最多尝试 3 次
+      // Retry the whole measurement cycle up to three times.
       for (int retry = 0; retry < 3; retry++) {
         if (doMeasurementAndSave()) {
-          break;  // 成功则退出重试
+          break;  // Stop retrying after a successful cycle.
         }
         Serial.printf("[Measure] Retry %d failed, waiting 3s...\n", retry + 1);
-        delay(3000);  // 减少延迟时间
+        delay(3000);  // Short retry backoff.
       }
     }
     else if ((now - lastWaitLogMs) >= 60000UL) {
@@ -531,12 +530,12 @@ static void measurementTask(void*) {
       lastWaitLogMs = now;
       Serial.printf("[Measure] Waiting for next cycle, remaining=%lu ms\n", remaining);
     }
-    vTaskDelay(1000 / portTICK_PERIOD_MS);  // 增加检查频率
+    vTaskDelay(1000 / portTICK_PERIOD_MS);  // Check once per second.
   }
 }
 
 // =====================================================
-// 任务：执行队列命令
+// Execute queued commands whose scheduled time has arrived.
 // =====================================================
 static void commandTask(void*) {
   while (true) {

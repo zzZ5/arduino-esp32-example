@@ -2,6 +2,8 @@
 // 断网数据缓存模块实现
 // 使用单个JSON文件存储所有缓存数据
 
+// Offline data cache implementation.
+// Store all cached samples in a single JSON file.
 #include "data_buffer.h"
 #include <SPIFFS.h>
 #include "config_manager.h"

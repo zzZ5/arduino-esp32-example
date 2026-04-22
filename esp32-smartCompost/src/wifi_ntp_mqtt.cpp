@@ -5,80 +5,24 @@
 #include <time.h>
 #include <HTTPClient.h>
 
-// 全局 WiFiClient 与 MQTT 客户端
+// Global WiFi client and MQTT client.
 static WiFiClient espClient;
 PubSubClient mqttClient(espClient);
 
-// WiFi 保活状态
+// Periodic WiFi health check state.
 static unsigned long lastWiFiCheck = 0;
-static const unsigned long WIFI_CHECK_INTERVAL = 30000;  // 30秒检查一次
+static const unsigned long WIFI_CHECK_INTERVAL = 30000;
 
-// WiFi 连接失败计数器
+// WiFi reconnect failure counter.
 static int wifiFailCount = 0;
-static const int WIFI_FAIL_LIMIT = 5;  // 连续失败5次后重启
+static const int WIFI_FAIL_LIMIT = 5;
 
-// 网络连通性检测
-static unsigned long lastNetworkCheck = 0;
-static const unsigned long NETWORK_CHECK_INTERVAL = 60000;  // 60秒检查一次
-static int networkFailCount = 0;
-static const int NETWORK_FAIL_LIMIT = 3;  // 连续失败3次后重启
-
-// 外部访问 MQTT 客户端引用
+// Expose the shared MQTT client instance.
 PubSubClient& getMQTTClient() {
 	return mqttClient;
 }
 
-/**
- * @brief 检测网络连通性（通过 ping 或 HTTP 请求）
- */
-static bool checkNetworkConnectivity() {
-	// 尝试通过 DNS 解析检测连通性（不消耗流量）
-	IPAddress result;
-	if (WiFi.hostByName("www.baidu.com", result)) {
-		Serial.println("[Network] Connectivity OK (DNS resolved)");
-		return true;
-	}
-
-	// 如果 DNS 失败，尝试 MQTT 服务器连通性
-	if (WiFi.hostByName(appConfig.mqttServer.c_str(), result)) {
-		Serial.println("[Network] MQTT server reachable");
-		return true;
-	}
-
-	return false;
-}
-
-/**
- * @brief 保持网络连通（检测无网络时重启）
- */
-static void maintainNetwork() {
-	unsigned long now = millis();
-	if (now - lastNetworkCheck < NETWORK_CHECK_INTERVAL) {
-		return;
-	}
-	lastNetworkCheck = now;
-
-	// 只在 WiFi 已连接时检测网络
-	if (WiFi.status() != WL_CONNECTED) {
-		return;
-	}
-
-	if (!checkNetworkConnectivity()) {
-		networkFailCount++;
-		Serial.printf("[Network] No internet, fail count: %d/%d\n", networkFailCount, NETWORK_FAIL_LIMIT);
-
-		if (networkFailCount >= NETWORK_FAIL_LIMIT) {
-			Serial.println("[Network] Offline for a while, keep running and use local cache");
-			networkFailCount = NETWORK_FAIL_LIMIT;
-		}
-	} else {
-		networkFailCount = 0;  // 网络正常，重置计数器
-	}
-}
-
-/**
- * @brief 保持 WiFi 在线（自动重连）
- */
+// Keep WiFi connected and retry in place when the link is lost.
 static void maintainWiFi() {
 	unsigned long now = millis();
 	if (now - lastWiFiCheck < WIFI_CHECK_INTERVAL) {
@@ -95,21 +39,17 @@ static void maintainWiFi() {
 			wifiFailCount++;
 			Serial.printf("[WiFi] Fail count: %d/%d\n", wifiFailCount, WIFI_FAIL_LIMIT);
 
-			// 连续失败超过限制，重启设备
 			if (wifiFailCount >= WIFI_FAIL_LIMIT) {
 				Serial.println("[WiFi] Too many failures, stay offline and keep retrying");
 				wifiFailCount = WIFI_FAIL_LIMIT;
 			}
-		} else {
-			// 连接成功，重置计数器
+		}
+		else {
 			wifiFailCount = 0;
 		}
 	}
 }
 
-/**
- * @brief 连接 WiFi
- */
 bool connectToWiFi(unsigned long timeoutMs) {
 	WiFi.mode(WIFI_STA);
 	WiFi.begin(appConfig.wifiSSID.c_str(), appConfig.wifiPass.c_str());
@@ -130,9 +70,7 @@ bool connectToWiFi(unsigned long timeoutMs) {
 	return true;
 }
 
-/**
- * @brief 等待 NTP 时间同步（每次尝试最多 waitMs 毫秒）
- */
+// Wait for NTP time to become valid for up to waitMs milliseconds.
 static bool waitForSync(unsigned long waitMs) {
 	unsigned long start = millis();
 	struct tm tinfo;
@@ -145,9 +83,7 @@ static bool waitForSync(unsigned long waitMs) {
 	return false;
 }
 
-/**
- * @brief 多 NTP 服务器同步方案，超时退出
- */
+// Try multiple NTP servers until time sync succeeds or the overall timeout expires.
 bool multiNTPSetup(unsigned long totalTimeoutMs) {
 	unsigned long start = millis();
 	bool synced = false;
@@ -185,25 +121,20 @@ bool multiNTPSetup(unsigned long totalTimeoutMs) {
 		}
 	}
 
-	// 设置时区：东八区
+	// Use UTC+8 after successful sync.
 	configTime(8 * 3600, 0, appConfig.ntpServers[0].c_str());
 	Serial.println("[NTP] Timezone set to UTC+8");
 	return true;
 }
 
-/**
- * @brief 获取当前时间的字符串格式
- * 如果 NTP 未同步，返回默认时间字符串
- */
+// Return the current local time string, or a fixed fallback when time is invalid.
 String getTimeString() {
 	struct tm tinfo;
 	if (!getLocalTime(&tinfo)) {
-		// NTP 未同步，返回默认时间
 		return "1970-01-01 00:00:00";
 	}
 
-	// 检查时间是否有效（1970 年表示未同步）
-	if (tinfo.tm_year < 120) {  // 2020年以前认为未同步
+	if (tinfo.tm_year < 120) {
 		return "1970-01-01 00:00:00";
 	}
 
@@ -212,9 +143,6 @@ String getTimeString() {
 	return String(buf);
 }
 
-/**
- * @brief 连接 MQTT 服务器
- */
 bool connectToMQTT(unsigned long timeoutMs) {
 	mqttClient.setServer(appConfig.mqttServer.c_str(), appConfig.mqttPort);
 	mqttClient.setBufferSize(1024);
@@ -237,7 +165,7 @@ bool connectToMQTT(unsigned long timeoutMs) {
 			appConfig.mqttPass.c_str())) {
 			Serial.println("[MQTT] Connected.");
 
-			// 连接成功后重新订阅响应 topic
+			// Resubscribe after reconnect because PubSubClient does not keep subscriptions.
 			String respTopic = appConfig.mqttResponseTopic();
 			if (respTopic.length() > 0) {
 				if (mqttClient.subscribe(respTopic.c_str())) {
@@ -259,16 +187,11 @@ bool connectToMQTT(unsigned long timeoutMs) {
 	return false;
 }
 
-/**
- * @brief 获取公网 IP 地址
- * 通过外部服务查询，失败返回局域网 IP
- */
+// Try several public services and fall back to the local LAN IP when needed.
 String getPublicIP() {
-	// 优先使用局域网 IP（如果设备直接在公网或使用端口转发）
 	String localIP = WiFi.localIP().toString();
 	Serial.printf("[IP] Local IP: %s\n", localIP.c_str());
 
-	// 尝试从多个服务获取公网 IP
 	const char* ipServices[] = {
 		"http://ifconfig.me/ip",
 		"http://icanhazip.com",
@@ -277,7 +200,7 @@ String getPublicIP() {
 	};
 
 	HTTPClient http;
-	http.setTimeout(5000);  // 5秒超时
+	http.setTimeout(5000);
 
 	for (const char* url : ipServices) {
 		if (WiFi.status() != WL_CONNECTED) {
@@ -306,15 +229,9 @@ String getPublicIP() {
 	return localIP;
 }
 
-/**
- * @brief 保持 MQTT 在线（WiFi保活 + 网络检测 + 重连 + loop）
- */
+// Keep WiFi and MQTT alive during normal runtime.
 void maintainMQTT(unsigned long timeoutMs) {
-	// 先保持 WiFi 在线
 	maintainWiFi();
-
-	// 检测网络连通性
-	maintainNetwork();
 
 	if (!mqttClient.connected()) {
 		Serial.println("[MQTT] Not connected, reconnecting...");
@@ -323,13 +240,9 @@ void maintainMQTT(unsigned long timeoutMs) {
 	mqttClient.loop();
 }
 
-/**
- * @brief 通过 MQTT 发布数据
- */
 bool publishData(const String& topic, const String& payload, unsigned long timeoutMs) {
 	unsigned long start = millis();
 
-	// 先确保 WiFi 在线
 	maintainWiFi();
 
 	while (!mqttClient.connected()) {
@@ -351,7 +264,6 @@ bool publishData(const String& topic, const String& payload, unsigned long timeo
 			Serial.printf("[MQTT] Publish fail, state=%d. Retry in 300ms\n", mqttClient.state());
 			delay(300);
 
-			// 检查 WiFi 和 MQTT 连接
 			maintainWiFi();
 			if (!mqttClient.connected()) {
 				connectToMQTT(timeoutMs - (millis() - start));
@@ -363,43 +275,31 @@ bool publishData(const String& topic, const String& payload, unsigned long timeo
 	return false;
 }
 
-/**
- * @brief 发布数据，失败时缓存到本地
- * @param topic MQTT主题
- * @param payload 数据payload
- * @param timestamp 时间戳（用于缓存）
- * @param timeoutMs 超时时间
- * @return true 成功上传 false 失败并缓存
- */
+// Publish immediately when possible, otherwise persist data locally for later upload.
 bool publishDataOrCache(const String& topic, const String& payload, const String& timestamp, unsigned long timeoutMs) {
 	if (publishData(topic, payload, timeoutMs)) {
-		// 上传成功，无需缓存
 		return true;
 	}
 
-	// 上传失败，尝试缓存到本地
 	Serial.println("[MQTT] Publish failed, caching locally...");
 	extern bool savePendingData(const String&, const String&, const String&);
 
 	if (savePendingData(topic, payload, timestamp)) {
 		Serial.println("[MQTT] Data cached successfully");
 		return false;
-	} else {
+	}
+	else {
 		Serial.println("[MQTT] Failed to cache data");
 		return false;
 	}
 }
 
-/**
- * @brief 尝试上传缓存数据（每次成功上传新数据后调用）
- * @param maxUpload 最大上传条数（默认10）
- * @return 实际上传成功的条数
- */
+// Attempt to upload pending cached samples in small batches.
 int uploadCachedData(int maxUpload) {
 	extern int getPendingDataCount();
 	extern bool getFirstPendingData(String&, String&, String&);
 	extern bool markFirstDataAsUploaded();
-    extern bool deferFirstPendingDataAfterFailure();
+	extern bool deferFirstPendingDataAfterFailure();
 	extern int cleanUploadedData(int keepCount);
 
 	int pendingCount = getPendingDataCount();
@@ -409,10 +309,10 @@ int uploadCachedData(int maxUpload) {
 
 	Serial.printf("[Cache] Found %d pending data items, uploading up to %d...\n", pendingCount, maxUpload);
 
-    const int maxFailuresPerRun = 2;
-    int uploadedCount = 0;
-    int failureCount = 0;
-    for (int i = 0; i < maxUpload; i++) {
+	const int maxFailuresPerRun = 2;
+	int uploadedCount = 0;
+	int failureCount = 0;
+	for (int i = 0; i < maxUpload; i++) {
 		String topic, payload, timestamp;
 
 		if (!getFirstPendingData(topic, payload, timestamp)) {
@@ -422,37 +322,35 @@ int uploadCachedData(int maxUpload) {
 
 		Serial.printf("[Cache] Uploading cached data (timestamp: %s)...\n", timestamp.c_str());
 
-		// 尝试上传（使用较短超时，避免阻塞太久）
-        if (publishData(topic, payload, 5000)) {
+		if (publishData(topic, payload, 5000)) {
 			Serial.println("[Cache] Cached data uploaded successfully");
-			// 标记为已上传
 			markFirstDataAsUploaded();
 			uploadedCount++;
-            failureCount = 0;
-			// 每次上传后稍作延迟
+			failureCount = 0;
 			delay(200);
-		} else {
+		}
+		else {
 			Serial.println("[Cache] Upload failed, keeping cached data for next retry");
-            // 上传失败，延后该条数据，避免卡住队列
-            deferFirstPendingDataAfterFailure();
-            failureCount++;
-            if (failureCount >= maxFailuresPerRun) {
-                Serial.println("[Cache] Too many failures in this run, stop uploading");
-                break;
-            }
-            delay(200);
+			deferFirstPendingDataAfterFailure();
+			failureCount++;
+			if (failureCount >= maxFailuresPerRun) {
+				Serial.println("[Cache] Too many failures in this run, stop uploading");
+				break;
+			}
+			delay(200);
 		}
 	}
 
 	if (uploadedCount > 0) {
 		Serial.printf("[Cache] Uploaded %d cached data items\n", uploadedCount);
 
-		// 清理旧的已上传数据（只保留最近1条）
+		// Keep the latest uploaded record for basic auditability.
 		int cleaned = cleanUploadedData(1);
 		if (cleaned > 0) {
 			Serial.printf("[Cache] Cleaned %d old uploaded items (kept latest 1)\n", cleaned);
 		}
-	} else {
+	}
+	else {
 		Serial.println("[Cache] No cached data uploaded");
 	}
 
