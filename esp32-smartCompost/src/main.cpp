@@ -494,7 +494,7 @@ static bool doMeasurementAndSave() {
   }
 
   if (uploaded) {
-    int uploadedCount = uploadCachedData(10);
+    int uploadedCount = uploadCachedData(1);
     if (uploadedCount > 0) {
       Serial.printf("[Measure] Uploaded %d cached data items\n", uploadedCount);
     }
@@ -652,7 +652,7 @@ void setup() {
   delay(500);  // 等待上线消息完全发送
 
   // 7) 上传之前缓存的旧数据（如果有）
-  int pendingCount = uploadCachedData(10);
+  int pendingCount = uploadCachedData(1);
   if (pendingCount > 0) {
     Serial.printf("[System] 上传了 %d 条缓存的历史数据\n", pendingCount);
   }
@@ -709,11 +709,11 @@ void loop() {
     ESP.restart();
   }
   static unsigned long lastCacheUploadMs = 0;
-  const unsigned long CACHE_UPLOAD_INTERVAL = 30000;
+  const unsigned long CACHE_UPLOAD_INTERVAL = 120000;
   unsigned long now = millis();
   if (now - lastCacheUploadMs >= CACHE_UPLOAD_INTERVAL) {
     lastCacheUploadMs = now;
-    int uploaded = uploadCachedData(10);
+    int uploaded = uploadCachedData(1);
     if (uploaded > 0) {
       Serial.printf("[Loop] Uploaded %d cached data items\n", uploaded);
     }

@@ -285,7 +285,8 @@ bool publishData(const String& topic, const String& payload, unsigned long timeo
 	ensureMqttMutex();
 	maintainWiFi();
 
-	if (xSemaphoreTake(g_mqttMutex, portMAX_DELAY) != pdTRUE) {
+	if (xSemaphoreTake(g_mqttMutex, pdMS_TO_TICKS(timeoutMs)) != pdTRUE) {
+		Serial.printf("[MQTT] publishData: mutex timeout >%lu ms\n", timeoutMs);
 		return false;
 	}
 
