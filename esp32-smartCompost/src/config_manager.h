@@ -4,9 +4,21 @@
 #include <Arduino.h>
 #include <vector>
 
+struct WiFiCredential {
+	String ssid;
+	String password;
+};
+
 struct AppConfig {
-	String wifiSSID;
-	String wifiPass;
+	std::vector<WiFiCredential> wifiNetworks;
+	int activeWifiIndex = -1;
+
+	String activeWifiSSID() const {
+		if (activeWifiIndex >= 0 && activeWifiIndex < (int)wifiNetworks.size()) {
+			return wifiNetworks[activeWifiIndex].ssid;
+		}
+		return "";
+	}
 
 	String mqttServer;
 	uint16_t mqttPort;

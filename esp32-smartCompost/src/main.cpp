@@ -78,13 +78,17 @@ static time_t parseScheduleOrNow(const String& schedule) {
 
 // =====================================================
 // Build the full configuration JSON used by register and reply payloads.
-// Format: { "wifi": {...}, "mqtt": {...}, "ntp_servers": [...], "pump_run_time": ..., "read_interval": ... }
+// Format: { "wifi": [...], "mqtt": {...}, "ntp_servers": [...], "pump_run_time": ..., "read_interval": ... }
 // =====================================================
 static void fillConfigJson(JsonObject cfg) {
   // WiFi
-  JsonObject wifi = cfg["wifi"].to<JsonObject>();
-  wifi["ssid"] = appConfig.wifiSSID;
-  wifi["password"] = appConfig.wifiPass;
+  JsonArray wifi = cfg["wifi"].to<JsonArray>();
+  for (const auto& item : appConfig.wifiNetworks) {
+    JsonObject wifiItem = wifi.add<JsonObject>();
+    wifiItem["ssid"] = item.ssid;
+    wifiItem["password"] = item.password;
+  }
+  cfg["active_wifi_ssid"] = appConfig.activeWifiSSID();
 
   // MQTT
   JsonObject mqtt = cfg["mqtt"].to<JsonObject>();
@@ -166,12 +170,25 @@ static bool updateAppConfigFromJson(JsonObject cfg) {
   }
 
   // -------- WiFi --------
-  if (cfg["wifi"].is<JsonObject>()) {
-    JsonObject wifi = cfg["wifi"].as<JsonObject>();
-    if (wifi["ssid"].is<String>() || wifi["ssid"].is<const char*>())
-      appConfig.wifiSSID = readStr(wifi["ssid"]);
-    if (wifi["password"].is<String>() || wifi["password"].is<const char*>())
-      appConfig.wifiPass = readStr(wifi["password"]);
+  if (cfg["wifi"].is<JsonArray>()) {
+    JsonArray wifi = cfg["wifi"].as<JsonArray>();
+    std::vector<WiFiCredential> nextNetworks;
+    nextNetworks.reserve(wifi.size());
+    for (JsonObject item : wifi) {
+      String ssid = readStr(item["ssid"], "");
+      if (ssid.length() == 0) {
+        continue;
+      }
+      nextNetworks.push_back({ ssid, readStr(item["password"], "") });
+    }
+    if (!nextNetworks.empty()) {
+      appConfig.wifiNetworks = nextNetworks;
+      appConfig.activeWifiIndex = -1;
+      Serial.printf("[CFG] wifi network count = %u\n", (unsigned)appConfig.wifiNetworks.size());
+    }
+    else {
+      Serial.println("[CFG] wifi array has no valid SSID, keep old WiFi config");
+    }
   }
 
   // -------- MQTT --------

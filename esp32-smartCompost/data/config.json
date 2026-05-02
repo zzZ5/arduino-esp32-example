@@ -1,8 +1,18 @@
 {
-  "wifi": {
-    "ssid": "TP-LINK_vt",
-    "password": "11112222"
-  },
+  "wifi": [
+    {
+      "ssid": "TP-LINK_vt",
+      "password": "11112222"
+    },
+    {
+      "ssid": "沃土3",
+      "password": "y2859307.."
+    },
+    {
+      "ssid": "Compostlab",
+      "password": "znxk8888"
+    }
+  ],
   "mqtt": {
     "server": "118.25.108.254",
     "port": 1883,

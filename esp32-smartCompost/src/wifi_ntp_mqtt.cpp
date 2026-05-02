@@ -2,8 +2,10 @@
 #include "wifi_ntp_mqtt.h"
 #include "config_manager.h"
 #include <WiFi.h>
+#include <Preferences.h>
 #include <time.h>
 #include <HTTPClient.h>
+#include <vector>
 #include <freertos/FreeRTOS.h>
 #include <freertos/semphr.h>
 #include <esp_task_wdt.h>
@@ -35,6 +37,9 @@ static const unsigned long WIFI_CHECK_INTERVAL = 30000;
 // WiFi reconnect failure counter.
 static int wifiFailCount = 0;
 static const int WIFI_FAIL_LIMIT = 5;
+static const char* WIFI_PREF_NAMESPACE = "wifi-state";
+static const char* WIFI_PREF_LAST_SSID = "last_ssid";
+static int g_skipWifiIndexOnce = -1;
 
 // Expose the shared MQTT client instance.
 PubSubClient& getMQTTClient() {
@@ -70,25 +75,124 @@ static void maintainWiFi() {
 	}
 }
 
+static String loadLastSuccessfulSSID() {
+	Preferences pref;
+	String ssid;
+	if (pref.begin(WIFI_PREF_NAMESPACE, true)) {
+		ssid = pref.getString(WIFI_PREF_LAST_SSID, "");
+		pref.end();
+	}
+	return ssid;
+}
+
+static void saveLastSuccessfulSSID(const String& ssid) {
+	Preferences pref;
+	if (ssid.length() > 0 && pref.begin(WIFI_PREF_NAMESPACE, false)) {
+		pref.putString(WIFI_PREF_LAST_SSID, ssid);
+		pref.end();
+	}
+}
+
+static int findWifiIndexBySSID(const String& ssid) {
+	if (ssid.length() == 0) {
+		return -1;
+	}
+	for (int i = 0; i < (int)appConfig.wifiNetworks.size(); i++) {
+		if (appConfig.wifiNetworks[i].ssid == ssid) {
+			return i;
+		}
+	}
+	return -1;
+}
+
+static bool canReachMQTTServer(unsigned long timeoutMs) {
+	if (appConfig.mqttServer.length() == 0) {
+		return true;
+	}
+
+	WiFiClient probe;
+	probe.setTimeout(timeoutMs);
+	Serial.printf("[WiFi] Checking route to MQTT %s:%d...\n",
+		appConfig.mqttServer.c_str(), appConfig.mqttPort);
+	bool ok = probe.connect(appConfig.mqttServer.c_str(), appConfig.mqttPort, timeoutMs);
+	probe.stop();
+	feedTaskWatchdog();
+	if (!ok) {
+		Serial.println("[WiFi] MQTT server unreachable on this network");
+	}
+	return ok;
+}
+
 bool connectToWiFi(unsigned long timeoutMs) {
+	if (appConfig.wifiNetworks.empty()) {
+		Serial.println("[WiFi] No configured networks");
+		return false;
+	}
+
 	WiFi.mode(WIFI_STA);
-	WiFi.begin(appConfig.wifiSSID.c_str(), appConfig.wifiPass.c_str());
+	WiFi.setAutoReconnect(true);
 
-	Serial.print("[WiFi] Connecting to: ");
-	Serial.println(appConfig.wifiSSID);
+	std::vector<int> tryOrder;
+	int preferredIndex = appConfig.activeWifiIndex;
+	if (preferredIndex < 0 || preferredIndex >= (int)appConfig.wifiNetworks.size()) {
+		preferredIndex = findWifiIndexBySSID(loadLastSuccessfulSSID());
+	}
+	if (preferredIndex >= 0 && preferredIndex < (int)appConfig.wifiNetworks.size() &&
+		preferredIndex != g_skipWifiIndexOnce) {
+		tryOrder.push_back(preferredIndex);
+	}
+	for (int i = 0; i < (int)appConfig.wifiNetworks.size(); i++) {
+		if (i != preferredIndex && i != g_skipWifiIndexOnce) {
+			tryOrder.push_back(i);
+		}
+	}
+	if (g_skipWifiIndexOnce >= 0 && g_skipWifiIndexOnce < (int)appConfig.wifiNetworks.size()) {
+		tryOrder.push_back(g_skipWifiIndexOnce);
+	}
+	g_skipWifiIndexOnce = -1;
 
-	unsigned long start = millis();
-	while (WiFi.status() != WL_CONNECTED) {
-		delay(500);
+	unsigned long perNetworkTimeout = timeoutMs;
+	if (appConfig.wifiNetworks.size() > 1 && perNetworkTimeout > 10000UL) {
+		perNetworkTimeout = 10000UL;
+	}
+
+	for (int index : tryOrder) {
+		const WiFiCredential& wifi = appConfig.wifiNetworks[index];
+		Serial.printf("[WiFi] Connecting to [%d/%d]: %s\n",
+			index + 1, (int)appConfig.wifiNetworks.size(), wifi.ssid.c_str());
+
+		WiFi.disconnect(false);
+		delay(200);
 		feedTaskWatchdog();
-		if (millis() - start > timeoutMs) {
-			Serial.println("\n[WiFi] Timeout!");
-			return false;
+		WiFi.begin(wifi.ssid.c_str(), wifi.password.c_str());
+
+		unsigned long start = millis();
+		while (WiFi.status() != WL_CONNECTED) {
+			delay(500);
+			feedTaskWatchdog();
+			if (millis() - start > perNetworkTimeout) {
+				Serial.printf("[WiFi] Timeout for SSID: %s\n", wifi.ssid.c_str());
+				break;
+			}
+		}
+
+		if (WiFi.status() == WL_CONNECTED) {
+			Serial.printf("[WiFi] Connected to %s, IP: %s\n",
+				wifi.ssid.c_str(), WiFi.localIP().toString().c_str());
+			if (canReachMQTTServer(2500)) {
+				appConfig.activeWifiIndex = index;
+				saveLastSuccessfulSSID(wifi.ssid);
+				Serial.printf("[WiFi] Network accepted: %s\n", wifi.ssid.c_str());
+				return true;
+			}
+			WiFi.disconnect(false);
+			delay(200);
+			feedTaskWatchdog();
 		}
 	}
 
-	Serial.printf("[WiFi] Connected, IP: %s\n", WiFi.localIP().toString().c_str());
-	return true;
+	Serial.println("[WiFi] All configured networks failed");
+	return false;
 }
 
 // Wait for NTP time to become valid for up to waitMs milliseconds.
@@ -181,6 +285,13 @@ bool connectToMQTT(unsigned long timeoutMs) {
 
 		if (millis() - start > timeoutMs) {
 			Serial.printf("[MQTT] connect timeout (> %lu ms)\n", timeoutMs);
+			if (appConfig.activeWifiIndex >= 0 && appConfig.wifiNetworks.size() > 1) {
+				Serial.println("[MQTT] Trying another WiFi network after MQTT timeout");
+				g_skipWifiIndexOnce = appConfig.activeWifiIndex;
+				appConfig.activeWifiIndex = -1;
+				mqttClient.disconnect();
+				connectToWiFi(10000);
+			}
 			return false;
 		}
 

@@ -31,8 +31,8 @@ bool loadConfigFromSPIFFS(const char* path) {
 		file.close();
 
 		// 使用默认配置
-		appConfig.wifiSSID = "compostlab";
-		appConfig.wifiPass = "ZNXK8888";
+		appConfig.wifiNetworks = {{"compostlab", "ZNXK8888"}};
+		appConfig.activeWifiIndex = -1;
 		appConfig.mqttServer = "";
 		appConfig.mqttPort = 1883;
 		appConfig.mqttUser = "";
@@ -52,7 +52,7 @@ bool loadConfigFromSPIFFS(const char* path) {
 	file.close();
 
 	// 重新打开文件解析
-	StaticJsonDocument<4096> doc;
+	JsonDocument doc;
 	DeserializationError err = deserializeJson(doc, content);
 	if (err) {
 		Serial.print("[Config] parse error: ");
@@ -61,8 +61,21 @@ bool loadConfigFromSPIFFS(const char* path) {
 	}
 
 	// WiFi 配置
-	appConfig.wifiSSID = doc["wifi"]["ssid"] | "compostlab";
-	appConfig.wifiPass = doc["wifi"]["password"] | "ZNXK8888";
+	appConfig.wifiNetworks.clear();
+	JsonArray wifiArr = doc["wifi"].as<JsonArray>();
+	if (!wifiArr.isNull()) {
+		for (JsonObject item : wifiArr) {
+			String ssid = item["ssid"] | "";
+			String password = item["password"] | "";
+			if (ssid.length() > 0) {
+				appConfig.wifiNetworks.push_back({ssid, password});
+			}
+		}
+	}
+	if (appConfig.wifiNetworks.empty()) {
+		appConfig.wifiNetworks = {{"compostlab", "ZNXK8888"}};
+	}
+	appConfig.activeWifiIndex = -1;
 
 	// MQTT
 	appConfig.mqttServer = doc["mqtt"]["server"] | "";
@@ -97,11 +110,15 @@ bool loadConfigFromSPIFFS(const char* path) {
 }
 
 bool saveConfigToSPIFFS(const char* path) {
-	StaticJsonDocument<4096> doc;
+	JsonDocument doc;
 
 	// WiFi
-	doc["wifi"]["ssid"] = appConfig.wifiSSID;
-	doc["wifi"]["password"] = appConfig.wifiPass;
+	JsonArray wifiArr = doc["wifi"].to<JsonArray>();
+	for (const auto& wifi : appConfig.wifiNetworks) {
+		JsonObject item = wifiArr.add<JsonObject>();
+		item["ssid"] = wifi.ssid;
+		item["password"] = wifi.password;
+	}
 
 	// MQTT
 	doc["mqtt"]["server"] = appConfig.mqttServer;
@@ -113,7 +130,7 @@ bool saveConfigToSPIFFS(const char* path) {
 	// post_topic 和 response_topic 根据 device_code 自动生成，不需要保存
 
 	// NTP
-	JsonArray ntpArr = doc.createNestedArray("ntp_servers");
+	JsonArray ntpArr = doc["ntp_servers"].to<JsonArray>();
 	for (auto& s : appConfig.ntpServers)
 		ntpArr.add(s);
 
@@ -141,7 +158,8 @@ bool saveConfigToSPIFFS(const char* path) {
 void printConfig(const AppConfig& cfg) {
 	Serial.println("----- AppConfig -----");
 
-	Serial.println("WiFi SSID: " + cfg.wifiSSID);
+	Serial.printf("WiFi Networks: %d\n", (int)cfg.wifiNetworks.size());
+	Serial.println("Active WiFi SSID: " + cfg.activeWifiSSID());
 	Serial.println("MQTT Server: " + cfg.mqttServer);
 	Serial.println("Device Code: " + cfg.deviceCode);
 
