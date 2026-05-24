@@ -117,14 +117,9 @@ static void publishOnlineWithConfig() {
   JsonDocument doc;
   doc["schema_version"] = 2;
 
-  // Use the public IP address when available.
-  String ipAddress = getPublicIP();
-  doc["ip_address"] = ipAddress;
-
   String timestamp = getTimeString();
   doc["timestamp"] = timestamp;
   Serial.printf("[Register] Timestamp: %s\n", timestamp.c_str());
-  Serial.printf("[Register] IP Address: %s\n", ipAddress.c_str());
 
   JsonObject cfg = doc["config"].to<JsonObject>();
   fillConfigJson(cfg);

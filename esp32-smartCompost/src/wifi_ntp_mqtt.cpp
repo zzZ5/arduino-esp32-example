@@ -4,7 +4,6 @@
 #include <WiFi.h>
 #include <Preferences.h>
 #include <time.h>
-#include <HTTPClient.h>
 #include <vector>
 #include <freertos/FreeRTOS.h>
 #include <freertos/semphr.h>
@@ -323,48 +322,6 @@ bool connectToMQTT(unsigned long timeoutMs) {
 	}
 
 	return false;
-}
-
-// Try several public services and fall back to the local LAN IP when needed.
-String getPublicIP() {
-	String localIP = WiFi.localIP().toString();
-	Serial.printf("[IP] Local IP: %s\n", localIP.c_str());
-
-	const char* ipServices[] = {
-		"http://ifconfig.me/ip",
-		"http://icanhazip.com",
-		"http://ipecho.net/plain",
-		"http://api.ipify.org"
-	};
-
-	HTTPClient http;
-	http.setTimeout(5000);
-
-	for (const char* url : ipServices) {
-		if (WiFi.status() != WL_CONNECTED) {
-			break;
-		}
-
-		Serial.printf("[IP] Trying: %s\n", url);
-		if (http.begin(url)) {
-			int httpCode = http.GET();
-			if (httpCode == HTTP_CODE_OK) {
-				String publicIP = http.getString();
-				publicIP.trim();
-				http.end();
-
-				if (publicIP.length() > 0) {
-					Serial.printf("[IP] Public IP: %s\n", publicIP.c_str());
-					return publicIP;
-				}
-			}
-			http.end();
-		}
-		delay(500);
-	}
-
-	Serial.println("[IP] Failed to get public IP, using local IP");
-	return localIP;
 }
 
 // Keep WiFi and MQTT alive during normal runtime.
