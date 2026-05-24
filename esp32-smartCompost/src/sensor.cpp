@@ -106,8 +106,8 @@ bool initSensorAndPump(int exhaustPin, int aerationPin,
 
 
 // ========== 泵控制 ==========
-void exhaustPumpOn() { digitalWrite(exhaustPinGlobal, LOW); }
-void exhaustPumpOff() { digitalWrite(exhaustPinGlobal, HIGH); }
+void exhaustPumpOn() { digitalWrite(exhaustPinGlobal, HIGH); }
+void exhaustPumpOff() { digitalWrite(exhaustPinGlobal, LOW); }
 void aerationOn() { digitalWrite(aerationPinGlobal, HIGH); }
 void aerationOff() { digitalWrite(aerationPinGlobal, LOW); }
 
