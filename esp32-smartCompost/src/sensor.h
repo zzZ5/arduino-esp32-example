@@ -32,10 +32,12 @@ void aerationOff();
 // 传感器读取
 int   readMHZ16();         // CO₂ 浓度（ppm）
 float readEOxygen();       // O₂ 浓度（%）
-float readDS18B20();       // DS18B20 物料温度（°C）
 
-// SHT30（I2C 温湿度传感器）
-float readSHT30Temp();     // 气体温度（°C）
-float readSHT30Hum();      // 气体湿度（%RH）
+// DS18B20 物料温度（°C）—— 已临时移除，保留声明以便恢复
+// float readDS18B20();
+
+// SHT30（I2C 温湿度传感器）—— 已临时移除，保留声明以便恢复
+// float readSHT30Temp();     // 气体温度（°C）
+// float readSHT30Hum();      // 气体湿度（%RH）
 
 #endif

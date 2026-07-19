@@ -1,9 +1,9 @@
 #include "sensor.h"
 #include <Wire.h>
-#include <OneWire.h>
-#include <DallasTemperature.h>
+// #include <OneWire.h>          // DS18B20 已临时移除
+// #include <DallasTemperature.h> // DS18B20 已临时移除
 #include "DFRobot_EOxygenSensor.h"
-#include "Adafruit_SHT31.h"   // ★ Adafruit SHT31 温湿度传感器
+// #include "Adafruit_SHT31.h"   // ★ Adafruit SHT31 温湿度传感器（已临时移除）
 
 // ========== 全局变量 ==========
 
@@ -14,15 +14,15 @@ static int mhz_rx = -1, mhz_tx = -1;
 // O2
 static DFRobot_EOxygenSensor_I2C o2sensor(&Wire, 0x70);
 
-// DS18B20
-static OneWire* oneWire = nullptr;
-static DallasTemperature* dallas = nullptr;
-static OneWire oneWireStatic(4);
-static DallasTemperature dallasStatic(&oneWireStatic);
-static bool ds18b20Initialized = false;
+// DS18B20（已临时移除，保留代码以便恢复）
+// static OneWire* oneWire = nullptr;
+// static DallasTemperature* dallas = nullptr;
+// static OneWire oneWireStatic(4);
+// static DallasTemperature dallasStatic(&oneWireStatic);
+// static bool ds18b20Initialized = false;
 
-// SHT31（I2C 温湿度传感器）
-Adafruit_SHT31 sht31 = Adafruit_SHT31();  // I2C 地址: 0x44
+// SHT31（I2C 温湿度传感器，已临时移除，保留代码以便恢复）
+// Adafruit_SHT31 sht31 = Adafruit_SHT31();  // I2C 地址: 0x44
 
 // 泵引脚
 static int exhaustPinGlobal = -1;
@@ -53,7 +53,7 @@ bool initSensorAndPump(int exhaustPin, int aerationPin,
 	mhz_tx = txPin;
 	mhzSerial->begin(9600, SERIAL_8N1, mhz_rx, mhz_tx);
 
-	// ---- I2C 初始化（O2 和 SHT31 共用） ----
+	// ---- I2C 初始化（O2 和 SHT31 共用，当前仅 O2 使用） ----
 	Wire.begin();
 
 	// ---- O2 ----
@@ -63,36 +63,36 @@ bool initSensorAndPump(int exhaustPin, int aerationPin,
 	}
 	Serial.println("[O2] Sensor initialized");
 
-	// ---- DS18B20 ----
+	// ---- DS18B20（已临时移除） ----
 	// 使用引脚 4 作为 DS18B20 的数据线
-	oneWire = &oneWireStatic;
-	dallas = &dallasStatic;
-	if (!ds18b20Initialized) {
-		dallas->begin();
-		ds18b20Initialized = true;
-	}
+	// oneWire = &oneWireStatic;
+	// dallas = &dallasStatic;
+	// if (!ds18b20Initialized) {
+	// 	dallas->begin();
+	// 	ds18b20Initialized = true;
+	// }
 
-	// ---- SHT31（I2C 温湿度传感器） ----
-	int sht31Retries = 0;
-	while (!sht31.begin(0x44)) {
-		sht31Retries++;
-		Serial.printf("[SHT31] Sensor not detected, retry %d...\n", sht31Retries);
-		if (sht31Retries >= 5) {
-			Serial.println("[SHT31] WARNING: SHT31 init failed after 5 retries");
-			break;
-		}
-		delay(500);
-	}
-	if (sht31Retries < 5) {
-		Serial.println("[SHT31] Sensor initialized");
-	}
-
-	// 测试读取
-	float testTemp = sht31.readTemperature();
-	float testHum = sht31.readHumidity();
-	if (isnan(testTemp) || isnan(testHum)) {
-		Serial.println("[SHT31] Init WARNING: first read failed (will retry later)");
-	}
+	// ---- SHT31（I2C 温湿度传感器，已临时移除） ----
+	// int sht31Retries = 0;
+	// while (!sht31.begin(0x44)) {
+	// 	sht31Retries++;
+	// 	Serial.printf("[SHT31] Sensor not detected, retry %d...\n", sht31Retries);
+	// 	if (sht31Retries >= 5) {
+	// 		Serial.println("[SHT31] WARNING: SHT31 init failed after 5 retries");
+	// 		break;
+	// 	}
+	// 	delay(500);
+	// }
+	// if (sht31Retries < 5) {
+	// 	Serial.println("[SHT31] Sensor initialized");
+	// }
+	// 
+	// // 测试读取
+	// float testTemp = sht31.readTemperature();
+	// float testHum = sht31.readHumidity();
+	// if (isnan(testTemp) || isnan(testHum)) {
+	// 	Serial.println("[SHT31] Init WARNING: first read failed (will retry later)");
+	// }
 
 	// ---- 超时 ----
 	if (millis() - start > timeoutMs) {
@@ -157,40 +157,40 @@ float readEOxygen() {
 }
 
 
-// ========== DS18B20 ==========
-float readDS18B20() {
-	if (!dallas) return -127.0;
+// ========== DS18B20（已临时移除，保留代码以便恢复） ==========
+// float readDS18B20() {
+// 	if (!dallas) return -127.0;
+// 
+// 	dallas->requestTemperatures();
+// 	// 等待温度转换完成(约 750ms)
+// 	delay(750);
+// 	float temp = dallas->getTempCByIndex(0);
+// 
+// 	// 检查是否读取失败
+// 	if (temp == -127.0 || temp == 85.0) {
+// 		return -127.0;
+// 	}
+// 	return temp;
+// }
 
-	dallas->requestTemperatures();
-	// 等待温度转换完成(约 750ms)
-	delay(750);
-	float temp = dallas->getTempCByIndex(0);
 
-	// 检查是否读取失败
-	if (temp == -127.0 || temp == 85.0) {
-		return -127.0;
-	}
-	return temp;
-}
-
-
-// ========== SHT31（I2C 温湿度传感器） ==========
-float readSHT30Temp() {
-	float temp = sht31.readTemperature();
-
-	// 检查是否读取失败
-	if (isnan(temp) || temp < -40.0 || temp > 125.0) {
-		return -127.0;
-	}
-	return temp;
-}
-
-float readSHT30Hum() {
-	float hum = sht31.readHumidity();
-
-	// 检查是否读取失败
-	if (isnan(hum) || hum < 0.0 || hum > 100.0) {
-		return -1.0;
-	}
-	return hum;
-}
+// ========== SHT31（I2C 温湿度传感器，已临时移除，保留代码以便恢复） ==========
+// float readSHT30Temp() {
+// 	float temp = sht31.readTemperature();
+// 
+// 	// 检查是否读取失败
+// 	if (isnan(temp) || temp < -40.0 || temp > 125.0) {
+// 		return -127.0;
+// 	}
+// 	return temp;
+// }
+// 
+// float readSHT30Hum() {
+// 	float hum = sht31.readHumidity();
+// 
+// 	// 检查是否读取失败
+// 	if (isnan(hum) || hum < 0.0 || hum > 100.0) {
+// 		return -1.0;
+// 	}
+// 	return hum;
+// }

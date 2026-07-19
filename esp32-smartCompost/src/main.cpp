@@ -425,12 +425,12 @@ static bool doMeasurementAndSave() {
 
   // 其他传感器
   float o2 = readEOxygen();
-  float t_ds = readDS18B20();
-
-  float t_air = readSHT30Temp();
-  float h_air = readSHT30Hum();
-  if (isnan(t_air)) t_air = -1;
-  if (isnan(h_air)) h_air = -1;
+  // 以下传感器已临时移除，保留代码以便恢复
+  // float t_ds = readDS18B20();
+  // float t_air = readSHT30Temp();
+  // float h_air = readSHT30Hum();
+  // if (isnan(t_air)) t_air = -1;
+  // if (isnan(h_air)) h_air = -1;
 
   String ts = getTimeString();
   time_t nowEpoch = time(nullptr);
@@ -461,31 +461,31 @@ static bool doMeasurementAndSave() {
   payload += "\"value\":" + String(o2, 2) + ",";
   payload += "\"unit\":\"%VOL\",";
   payload += "\"quality\":\"" + String(getQuality(o2)) + "\"";
-  payload += "},";
+  payload += "}";  // O2 现为最后一个通道，去掉尾逗号
 
-  // RoomTemp (℃)
-  payload += "{";
-  payload += "\"code\":\"RoomTemp\",";
-  payload += "\"value\":" + String(t_ds, 1) + ",";
-  payload += "\"unit\":\"℃\",";
-  payload += "\"quality\":\"" + String(getQuality(t_ds)) + "\"";
-  payload += "},";
+  // RoomTemp (℃) —— 已临时移除传感器
+  // payload += "{";
+  // payload += "\"code\":\"RoomTemp\",";
+  // payload += "\"value\":" + String(t_ds, 1) + ",";
+  // payload += "\"unit\":\"℃\",";
+  // payload += "\"quality\":\"" + String(getQuality(t_ds)) + "\"";
+  // payload += "},";
 
-  // AirTemp (℃)
-  payload += "{";
-  payload += "\"code\":\"AirTemp\",";
-  payload += "\"value\":" + String(t_air, 1) + ",";
-  payload += "\"unit\":\"℃\",";
-  payload += "\"quality\":\"" + String(getQuality(t_air)) + "\"";
-  payload += "},";
+  // AirTemp (℃) —— 已临时移除传感器
+  // payload += "{";
+  // payload += "\"code\":\"AirTemp\",";
+  // payload += "\"value\":" + String(t_air, 1) + ",";
+  // payload += "\"unit\":\"℃\",";
+  // payload += "\"quality\":\"" + String(getQuality(t_air)) + "\"";
+  // payload += "},";
 
-  // AirHumidity (%RH)
-  payload += "{";
-  payload += "\"code\":\"AirHumidity\",";
-  payload += "\"value\":" + String(h_air, 1) + ",";
-  payload += "\"unit\":\"%RH\",";
-  payload += "\"quality\":\"" + String(getQuality(h_air)) + "\"";
-  payload += "}";
+  // AirHumidity (%RH) —— 已临时移除传感器
+  // payload += "{";
+  // payload += "\"code\":\"AirHumidity\",";
+  // payload += "\"value\":" + String(h_air, 1) + ",";
+  // payload += "\"unit\":\"%RH\",";
+  // payload += "\"quality\":\"" + String(getQuality(h_air)) + "\"";
+  // payload += "}";
 
   payload += "]}";
 
